@@ -1,0 +1,16 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Datos de PadChest (acuerdo de uso: no compartir)
+data/
+
+# Archivos internos de marimo
+__marimo__/

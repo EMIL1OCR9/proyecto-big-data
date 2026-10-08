@@ -1,0 +1,23 @@
+[project]
+name = "proyecto-big-data"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "EMIL1OCR9", email = "Emiliocramos59@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "marimo>=0.25.1",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "pandas>=3.0.6",
+    "pillow>=12.3.0",
+]
+
+[project.scripts]
+proyecto-big-data = "proyecto_big_data:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
