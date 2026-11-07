@@ -12,7 +12,8 @@ Proyecto escolar de big data sobre tomografias de torax (CT) del [NLST](https://
 | Union de CT y datos clinicos | Listo, con mapeo de rondas por corregir |
 | Limpieza y transformacion de metadatos | Listo |
 | Cohorte con cancer confirmado a 12 meses | Listo |
-| Preprocesamiento de imagenes | Pendiente en el repo |
+| Division train/validation/test, Parquet y datalist MONAI | Listo |
+| Conversion de imagenes a NIfTI | Listo, probado con 7 series |
 | Inferencia (pulmones y nodulos) | Probado en un notebook de Colab, pendiente en el repo |
 | Medicion, analisis longitudinal y evaluacion clinica | Pendiente |
 | Web (React, backend y base de datos) y agente | Pendiente |
@@ -26,6 +27,8 @@ backend/data_pipeline/
     profile_nlst_ct.py          Resume cada variable: tipo, faltantes y valores unicos
     transform_nlst_ct.py        Normaliza tipos y genera el reporte final
     build_cancer_cohort.py      Arma la cohorte T0 con cancer confirmado a 12 meses
+    prepare_monai_dataset.py    Divide la cohorte, elige la muestra y exporta Parquet y datalist
+    convert_to_nifti.py         Descarga la muestra y la guarda en NIfTI
 nlst/
     descargar_nlst.py           Descarga CT con limite de GB
     ver_dicom.py                Muestra un corte de una CT
@@ -47,8 +50,6 @@ cd proyecto-big-data
 uv sync
 ```
 
-`idc-index` todavia no esta en `pyproject.toml`, asi que los scripts que consultan IDC usan `--with idc-index`.
-
 ## Uso
 
 Corre los comandos desde la raiz del repo.
@@ -56,7 +57,7 @@ Corre los comandos desde la raiz del repo.
 **Cohorte de cancer confirmado:**
 
 ```bash
-uv run --with idc-index python backend/data_pipeline/build_cancer_cohort.py
+uv run python backend/data_pipeline/build_cancer_cohort.py
 ```
 
 Genera `outputs/cancer_cohort/cohorte_cancer_12m.csv` y `resumen_cohorte.csv`.
@@ -64,11 +65,20 @@ Genera `outputs/cancer_cohort/cohorte_cancer_12m.csv` y `resumen_cohorte.csv`.
 **Cohorte de cribado y control de calidad:**
 
 ```bash
-uv run --with idc-index python backend/data_pipeline/link_nlst_ct.py
+uv run python backend/data_pipeline/link_nlst_ct.py
 uv run python backend/data_pipeline/quality_control_nlst_ct.py --input outputs/link_audit/t0_screening_cohort_provisional.csv
 uv run python backend/data_pipeline/profile_nlst_ct.py
 uv run python backend/data_pipeline/transform_nlst_ct.py
 ```
+
+**Dataset para MONAI:**
+
+```bash
+uv run python backend/data_pipeline/prepare_monai_dataset.py
+uv run python backend/data_pipeline/convert_to_nifti.py --split test --limit 10 --workers 1
+```
+
+Genera en `outputs/monai_dataset/` la tabla `cohorte_cancer_12m.parquet`, `datalist.json` y `resumen_division.csv`. Antes de remuestrear se revisa la geometria de cada serie y el relleno fuera del campo de vision (`PixelPaddingValue` y todo lo que esta debajo de -1024 HU) se cambia por aire; esta parte viene del preprocesamiento de Iris. Las imagenes quedan en `data/monai/images/`, en HU y remuestreadas a 0.703 x 0.703 x 1.25 mm; cada serie ocupa cerca de 50 MB. Usa `--workers 1` en una PC y sube el valor en los servidores de la escuela, donde se hara la descarga completa. Cada worker usa cerca de 2 GB de RAM. `--limit` es obligatorio. Volver a correr el script salta lo ya convertido y reintenta lo que fallo; los fallos quedan en `data/monai/conversion_fallidas.csv` y el resumen de calidad de cada serie en `data/monai/conversion_resumen.csv`.
 
 **Descargar una muestra de CT y ver un corte:** sigue [nlst/README.md](nlst/README.md).
 
@@ -91,6 +101,18 @@ Total: 25,706 series.
 - Si falta `candx_days` no se asume negativo: se exige seguimiento suficiente.
 - La etiqueta indica un diagnostico en el ano siguiente; no confirma que el cancer se vea en esa CT.
 - Solo 1.1 % de las series etiquetadas es positiva. Para entrenar hay que separar por paciente y reportar con la prevalencia real.
+
+## Division de datos
+
+Con la semilla 42 cada paciente cae en un solo conjunto (70 % train, 15 % validation, 15 % test), estratificado por etiqueta, cribado positivo y fabricante del tomografo. Se descargan todos los positivos y 9 negativos por positivo, para cumplir el minimo de 250 GB de imagenes del proyecto.
+
+| Conjunto | Pacientes con etiqueta | Positivos | Series a descargar | Descarga (GB) |
+|---|---|---|---|---|
+| train | 17,804 | 198 | 1,984 | 183.9 |
+| validation | 3,818 | 43 | 433 | 38.3 |
+| test | 3,814 | 42 | 424 | 38.1 |
+
+La muestra tiene cerca de 10 % de positivos; la prevalencia real es 1.1 %. Para reportar metricas de validation y test hay que ponderar con `peso_muestreo`.
 
 ## Limitaciones conocidas
 
