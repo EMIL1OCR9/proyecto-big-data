@@ -59,9 +59,21 @@ def normalize_padding(value: int, bits: int, representation: int) -> int:
     return value
 
 
-def read_headers(files: list[str]) -> tuple[list[tuple[float, float] | None], float]:
-    """Revisa la geometria y regresa el rango de relleno en HU de cada corte."""
-    positions, padding = [], []
+def same_pixels(first: str, second: str) -> bool:
+    """Compara la imagen de dos cortes DICOM."""
+    return np.array_equal(
+        sitk.GetArrayFromImage(sitk.ReadImage(first)),
+        sitk.GetArrayFromImage(sitk.ReadImage(second)),
+    )
+
+
+def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] | None], float, int]:
+    """Revisa la geometria, ordena los cortes y quita los repetidos.
+
+    Regresa los archivos en orden, el rango de relleno en HU de cada uno, el espaciado Z
+    y cuantos cortes repetidos se quitaron.
+    """
+    slices = []
     reference = None
 
     for path in files:
@@ -81,27 +93,34 @@ def read_headers(files: list[str]) -> tuple[list[tuple[float, float] | None], fl
             or shape != reference[2]
         ):
             raise ValueError("la serie mezcla orientacion, espaciado o tamanos")
-        positions.append(float(np.dot(np.asarray(ds.ImagePositionPatient, dtype=float), reference[3])))
+        position = float(np.dot(np.asarray(ds.ImagePositionPatient, dtype=float), reference[3]))
 
+        padding = None
         pad = ds.get("PixelPaddingValue")
-        if pad is None:
-            padding.append(None)
-            continue
-        # El relleno se declara en valores crudos: se pasa a HU con el rescale del corte.
-        slope = float(ds.get("RescaleSlope", 1))
-        intercept = float(ds.get("RescaleIntercept", 0))
-        bits, representation = int(ds.BitsStored), int(ds.PixelRepresentation)
-        limit = ds.get("PixelPaddingRangeLimit", pad)
-        raw = [normalize_padding(v, bits, representation) for v in (pad, limit)]
-        padding.append(tuple(sorted(v * slope + intercept for v in raw)))
+        if pad is not None:
+            # El relleno se declara en valores crudos: se pasa a HU con el rescale del corte.
+            slope = float(ds.get("RescaleSlope", 1))
+            intercept = float(ds.get("RescaleIntercept", 0))
+            bits, representation = int(ds.BitsStored), int(ds.PixelRepresentation)
+            limit = ds.get("PixelPaddingRangeLimit", pad)
+            raw = [normalize_padding(v, bits, representation) for v in (pad, limit)]
+            padding = tuple(sorted(v * slope + intercept for v in raw))
+        slices.append((position, path, padding))
 
-    steps = np.diff(positions)
-    if not (np.all(steps > 0.01) or np.all(steps < -0.01)):
-        raise ValueError("cortes duplicados o desordenados")
-    z_spacing = float(np.median(np.abs(steps)))
-    if np.any(np.abs(np.abs(steps) - z_spacing) > max(0.25 * z_spacing, 0.2)):
+    # GDCM no ordena las series con cortes repetidos, asi que se ordena aqui.
+    slices.sort(key=lambda s: s[0])
+    unique = [slices[0]]
+    for current in slices[1:]:
+        if current[0] - unique[-1][0] > 0.01:
+            unique.append(current)
+        elif not same_pixels(current[1], unique[-1][1]):
+            raise ValueError("dos cortes en la misma posicion con imagen distinta")
+
+    steps = np.diff([s[0] for s in unique])
+    z_spacing = float(np.median(steps))
+    if np.any(np.abs(steps - z_spacing) > max(0.25 * z_spacing, 0.2)):
         raise ValueError("espaciado Z irregular")
-    return padding, z_spacing
+    return [s[1] for s in unique], [s[2] for s in unique], z_spacing, len(slices) - len(unique)
 
 
 def convert_series(job: dict) -> dict:
@@ -110,7 +129,7 @@ def convert_series(job: dict) -> dict:
         files = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(job["source"], job["uid"])
         if len(files) != job["slices"]:
             raise ValueError(f"{len(files)} cortes, se esperaban {job['slices']}")
-        padding, z_spacing = read_headers(files)
+        files, padding, z_spacing, duplicates = read_headers(files)
 
         reader = sitk.ImageSeriesReader()
         reader.SetFileNames(files)
@@ -146,6 +165,7 @@ def convert_series(job: dict) -> dict:
             "porcentaje_relleno": round(100 * float(mask.mean()), 3),
             "porcentaje_fuera_del_tag": round(100 * float((mask & ~declared).mean()), 3),
             "espaciado_z_original_mm": round(z_spacing, 3),
+            "cortes_repetidos_quitados": duplicates,
         }
     except Exception as error:  # Una serie mala no debe detener las demas.
         return {"error": str(error)}
@@ -223,7 +243,10 @@ def main() -> None:
     # El resumen de calidad se acumula entre corridas; los fallos solo son de esta corrida.
     summary = args.data_dir / "conversion_resumen.csv"
     if converted:
-        pd.DataFrame(converted).to_csv(summary, mode="a", header=not summary.exists(), index=False)
+        rows = pd.DataFrame(converted)
+        if summary.exists():  # Se reescribe para que las columnas nuevas no queden desalineadas.
+            rows = pd.concat([pd.read_csv(summary, dtype={"PatientID": "string"}), rows], ignore_index=True)
+        rows.to_csv(summary, index=False)
     log = args.data_dir / "conversion_fallidas.csv"
     pd.DataFrame(failures, columns=["PatientID", "SeriesInstanceUID", "error"]).to_csv(log, index=False)
     if failures:
