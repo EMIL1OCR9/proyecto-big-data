@@ -13,7 +13,7 @@ Proyecto escolar de big data sobre tomografias de torax (CT) del [NLST](https://
 | Limpieza y transformacion de metadatos | Listo |
 | Cohorte con cancer confirmado a 12 meses | Listo |
 | Division train/validation/test, Parquet y datalist MONAI | Listo |
-| Conversion de imagenes a NIfTI | Listo, probado con 7 series |
+| Conversion de imagenes a NIfTI | Listo, piloto de 54 series sin fallos |
 | Inferencia (pulmones y nodulos) | Probado en un notebook de Colab, pendiente en el repo |
 | Medicion, analisis longitudinal y evaluacion clinica | Pendiente |
 | Web (React, backend y base de datos) y agente | Pendiente |
@@ -78,7 +78,7 @@ uv run python backend/data_pipeline/prepare_monai_dataset.py
 uv run python backend/data_pipeline/convert_to_nifti.py --split test --limit 10 --workers 1
 ```
 
-Genera en `outputs/monai_dataset/` la tabla `cohorte_cancer_12m.parquet`, `datalist.json` y `resumen_division.csv`. Antes de remuestrear se revisa la geometria de cada serie y el relleno fuera del campo de vision (`PixelPaddingValue` y todo lo que esta debajo de -1024 HU) se cambia por aire; esta parte viene del preprocesamiento de Iris. Las imagenes quedan en `data/monai/images/`, en HU y remuestreadas a 0.703 x 0.703 x 1.25 mm; cada serie ocupa cerca de 50 MB. Usa `--workers 1` en una PC y sube el valor en los servidores de la escuela, donde se hara la descarga completa. Cada worker usa cerca de 2 GB de RAM. `--limit` es obligatorio. Volver a correr el script salta lo ya convertido y reintenta lo que fallo; los fallos quedan en `data/monai/conversion_fallidas.csv` y el resumen de calidad de cada serie en `data/monai/conversion_resumen.csv`.
+Genera en `outputs/monai_dataset/` la tabla `cohorte_cancer_12m.parquet`, `datalist.json` y `resumen_division.csv`. Antes de remuestrear se ordenan los cortes por posicion, se quitan los repetidos identicos, se revisa la geometria de cada serie y el relleno fuera del campo de vision (`PixelPaddingValue` y todo lo que esta debajo de -1024 HU) se cambia por aire; esta parte viene del preprocesamiento de Iris. Las imagenes quedan en `data/monai/images/`, en HU y remuestreadas a 0.703 x 0.703 x 1.25 mm; cada serie ocupa cerca de 50 MB. Usa `--workers 1` en una PC y sube el valor en los servidores de la escuela, donde se hara la descarga completa. Cada worker usa cerca de 2 GB de RAM. `--limit` es obligatorio. Volver a correr el script salta lo ya convertido y reintenta lo que fallo; los fallos quedan en `data/monai/conversion_fallidas.csv` y el resumen de calidad de cada serie en `data/monai/conversion_resumen.csv`.
 
 **Descargar una muestra de CT y ver un corte:** sigue [nlst/README.md](nlst/README.md).
 
