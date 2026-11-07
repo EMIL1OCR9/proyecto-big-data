@@ -9,7 +9,7 @@ Proyecto escolar de big data sobre tomografias de torax (CT) del [NLST](https://
 | Parte | Estado |
 |---|---|
 | Descarga de una muestra de CT | Listo (`nlst/`) |
-| Union de CT y datos clinicos | Listo, con mapeo de rondas por corregir |
+| Union de CT y datos clinicos | Listo |
 | Limpieza y transformacion de metadatos | Listo |
 | Cohorte con cancer confirmado a 12 meses | Listo |
 | Division train/validation/test, Parquet y datalist MONAI | Listo |
@@ -23,7 +23,7 @@ Proyecto escolar de big data sobre tomografias de torax (CT) del [NLST](https://
 ```text
 backend/data_pipeline/
     link_nlst_ct.py             Une CT y datos clinicos, y arma la cohorte T0 de cribado
-    quality_control_nlst_ct.py  Revisa duplicados, IDs faltantes y valores invalidos
+    quality_control_nlst_ct.py  Revisa duplicados, IDs, una serie T0 por paciente y etiquetas
     profile_nlst_ct.py          Resume cada variable: tipo, faltantes y valores unicos
     transform_nlst_ct.py        Normaliza tipos y genera el reporte final
     build_cancer_cohort.py      Arma la cohorte T0 con cancer confirmado a 12 meses
@@ -62,14 +62,23 @@ uv run python backend/data_pipeline/build_cancer_cohort.py
 
 Genera `outputs/cancer_cohort/cohorte_cancer_12m.csv` y `resumen_cohorte.csv`.
 
-**Cohorte de cribado y control de calidad:**
+**Control de calidad de la cohorte de cancer:**
 
 ```bash
-uv run python backend/data_pipeline/link_nlst_ct.py
-uv run python backend/data_pipeline/quality_control_nlst_ct.py --input outputs/link_audit/t0_screening_cohort_provisional.csv
+uv run python backend/data_pipeline/quality_control_nlst_ct.py --input outputs/cancer_cohort/cohorte_cancer_12m.csv
 uv run python backend/data_pipeline/profile_nlst_ct.py
 uv run python backend/data_pipeline/transform_nlst_ct.py
 ```
+
+Revisa duplicados, IDs faltantes, que cada paciente tenga una sola serie T0 axial original y que la etiqueta coincida con los dias al diagnostico. El resumen queda en `outputs/quality_control/resumen_qc.csv`.
+
+**Cohorte de cribado (opcional):**
+
+```bash
+uv run python backend/data_pipeline/link_nlst_ct.py
+```
+
+Usa las mismas series que la cohorte de cancer, pero con la etiqueta de cribado (`scr_res0`). Un cribado positivo no es un cancer confirmado.
 
 **Dataset para MONAI:**
 
@@ -78,7 +87,7 @@ uv run python backend/data_pipeline/prepare_monai_dataset.py
 uv run python backend/data_pipeline/convert_to_nifti.py --split test --limit 10 --workers 1
 ```
 
-Genera en `outputs/monai_dataset/` la tabla `cohorte_cancer_12m.parquet`, `datalist.json` y `resumen_division.csv`. Antes de remuestrear se ordenan los cortes por posicion, se quitan los repetidos identicos, se revisa la geometria de cada serie y el relleno fuera del campo de vision (`PixelPaddingValue` y todo lo que esta debajo de -1024 HU) se cambia por aire; esta parte viene del preprocesamiento de Iris. Las imagenes quedan en `data/monai/images/`, en HU y remuestreadas a 0.703 x 0.703 x 1.25 mm; cada serie ocupa cerca de 50 MB. Usa `--workers 1` en una PC y sube el valor en los servidores de la escuela, donde se hara la descarga completa. Cada worker usa cerca de 2 GB de RAM. `--limit` es obligatorio. Volver a correr el script salta lo ya convertido y reintenta lo que fallo; los fallos quedan en `data/monai/conversion_fallidas.csv` y el resumen de calidad de cada serie en `data/monai/conversion_resumen.csv`.
+Genera en `outputs/monai_dataset/` la tabla `cohorte_cancer_12m.parquet`, `datalist.json` y `resumen_division.csv`. Antes de remuestrear se ordenan los cortes por posicion, se quitan los repetidos identicos, se revisa la geometria de cada serie y el relleno fuera del campo de vision (`PixelPaddingValue` y todo lo que esta debajo de -1024 HU) se cambia por aire; esta parte viene del preprocesamiento de Iris. Las imagenes quedan en `data/monai/images/`, en HU y remuestreadas a 0.703 x 0.703 x 1.25 mm; cada serie ocupa cerca de 50 MB. Usa `--workers 1` en una PC y sube el valor en los servidores de la escuela, donde se hara la descarga completa. Cada worker usa cerca de 2 GB de RAM. `--limit` es obligatorio y el script se detiene antes de empezar si no hay disco suficiente. Al inicio y al final muestra cuantas series y GB van descargados, para comprobar el minimo de 250 GB. Volver a correr el script salta lo ya convertido y reintenta lo que fallo; los fallos quedan en `data/monai/conversion_fallidas.csv` y el resumen de calidad de cada serie en `data/monai/conversion_resumen.csv`.
 
 **Descargar una muestra de CT y ver un corte:** sigue [nlst/README.md](nlst/README.md).
 
@@ -116,7 +125,7 @@ La muestra tiene cerca de 10 % de positivos; la prevalencia real es 1.1 %. Para 
 
 ## Limitaciones conocidas
 
-- `link_nlst_ct.py` valida rondas comparando intervalos de fechas, pero `StudyDate` esta anonimizada: solo tiene una fecha por ronda. Ese filtro deja 11,561 series T0; hay que cambiarlo por `SeriesDescription`.
+- `StudyDate` esta anonimizada (una sola fecha por ronda), asi que la ronda se toma de `SeriesDescription`.
 - Las anotaciones publicas pueden traer errores. Por ejemplo, en un paciente la tabla reporta 53 mm y en la imagen el nodulo mide cerca de 4 mm.
 - El notebook de Colab con los modelos todavia no esta en el repo.
 

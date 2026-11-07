@@ -43,6 +43,7 @@ def ejecutar_control_calidad(entrada, salida):
         "scr_days0", "scr_days1", "scr_days2",
         "scr_res0", "scr_res1", "scr_res2", "candx_days",
         "resultado_cribado_t0", "etiqueta_cribado_provisional",
+        "etiqueta_cancer_12m", "canc_free_days", "can_scr",
     ]
     for col in numericas:
         if col in df.columns:
@@ -66,6 +67,27 @@ def ejecutar_control_calidad(entrada, salida):
     if "series_size_MB" in df.columns:
         df["qc_tamano_invalido"] = df["series_size_MB"].notna() & (df["series_size_MB"] <= 0)
 
+    # Cada paciente debe aportar una sola serie, y debe ser T0 axial original.
+    df["qc_paciente_repetido"] = df["PatientID"].notna() & df["PatientID"].duplicated(keep=False)
+    df["qc_serie_no_t0_opa"] = False
+    if "SeriesDescription" in df.columns:
+        df["qc_serie_no_t0_opa"] = ~df["SeriesDescription"].fillna("").str.startswith("0,OPA,")
+
+    df["qc_etiqueta_invalida"] = False
+    for col in ["etiqueta_cancer_12m", "etiqueta_cribado_provisional"]:
+        if col in df.columns:
+            df["qc_etiqueta_invalida"] |= df[col].notna() & ~df[col].isin([0, 1])
+
+    # La etiqueta de cancer debe coincidir con los dias al diagnostico (horizonte de 365 dias).
+    df["qc_etiqueta_incoherente"] = False
+    if {"etiqueta_cancer_12m", "candx_days", "scr_days0"} <= set(df.columns):
+        dias = df["candx_days"] - df["scr_days0"]
+        en_horizonte = dias.between(1, 365)
+        df["qc_etiqueta_incoherente"] = (
+            (df["etiqueta_cancer_12m"].eq(1) & ~en_horizonte)
+            | (df["etiqueta_cancer_12m"].eq(0) & en_horizonte)
+        )
+
     reporte = pd.DataFrame({
         "columna": df.columns,
         "faltantes": [int(df[c].isna().sum()) for c in df.columns],
@@ -82,6 +104,10 @@ def ejecutar_control_calidad(entrada, salida):
         "filas_con_numero_cortes_invalido": int(df["qc_instanceCount_invalido"].sum()),
         "filas_con_tamano_invalido": int(df["qc_tamano_invalido"].sum()),
         "series_en_grupos_duplicados": int(duplicados["SeriesInstanceUID"].nunique()),
+        "filas_con_paciente_repetido": int(df["qc_paciente_repetido"].sum()),
+        "filas_con_serie_no_t0_opa": int(df["qc_serie_no_t0_opa"].sum()),
+        "filas_con_etiqueta_invalida": int(df["qc_etiqueta_invalida"].sum()),
+        "filas_con_etiqueta_incoherente": int(df["qc_etiqueta_incoherente"].sum()),
     }
     pd.Series(resumen, name="valor").to_csv(salida / "resumen_qc.csv", header=True)
     df.to_csv(salida / "cohorte_revisada.csv", index=False)
