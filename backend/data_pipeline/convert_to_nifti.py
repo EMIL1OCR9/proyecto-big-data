@@ -37,6 +37,7 @@ import SimpleITK as sitk
 
 SPACING = (0.703125, 0.703125, 1.25)  # mm, el del detector de MONAI
 SERIES_PER_WORKER = 4  # tamano de cada lote de descarga
+NIFTI_RATIO = 0.85  # el NIfTI ocupa ~81 % del DICOM (piloto de 54 series), con margen
 AIR_HU = -1000  # valor que reemplaza al relleno
 SUSPICIOUS_HU = -1024  # nada real queda debajo: tambien se toma como relleno
 
@@ -198,6 +199,18 @@ def convert_batch(client, batch: pd.DataFrame, data_dir: Path, pool) -> list[dic
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+def report_progress(sample: pd.DataFrame, data_dir: Path) -> pd.Series:
+    """Muestra cuanto de la muestra ya esta convertido y regresa que filas lo estan."""
+    done = sample["ruta_imagen"].map(lambda p: (data_dir / p).exists())
+    on_disk = sum((data_dir / p).stat().st_size for p in sample.loc[done, "ruta_imagen"]) / 1024**3
+    print(
+        f"Convertidas: {int(done.sum())}/{len(sample)} series | descargado: "
+        f"{sample.loc[done, 'series_size_MB'].sum() / 1024:.1f} de {sample['series_size_MB'].sum() / 1024:.1f} GB "
+        f"(DICOM) | en disco: {on_disk:.1f} GB"
+    )
+    return done
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("outputs/monai_dataset/cohorte_cancer_12m.parquet"))
@@ -216,15 +229,24 @@ def main() -> None:
     if args.split:
         sample = sample[sample["split"].eq(args.split)]
 
-    pending = sample[~sample["ruta_imagen"].map(lambda p: (args.data_dir / p).exists())]
+    pending = sample[~report_progress(sample, args.data_dir)]
     selected = pending.head(args.limit)
     print(
         f"Muestra: {len(sample)} | pendientes: {len(pending)} | ahora: {len(selected)} "
         f"(~{selected['series_size_MB'].sum() / 1024:.1f} GB de descarga)"
     )
 
-    client = IDCClient()
     batch_size = args.workers * SERIES_PER_WORKER
+    # Espacio para los NIfTI de esta corrida, mas un lote de DICOM temporales.
+    needed = (
+        selected["series_size_MB"].sum() * NIFTI_RATIO
+        + selected["series_size_MB"].nlargest(batch_size).sum()
+    ) / 1024
+    free = shutil.disk_usage(args.data_dir).free / 1024**3
+    if needed > free:
+        raise SystemExit(f"Hacen falta ~{needed:.1f} GB y solo hay {free:.1f} GB libres. Baja --limit o libera espacio.")
+
+    client = IDCClient()
     failures, converted, done = [], [], 0
     start = time.time()
 
@@ -251,6 +273,7 @@ def main() -> None:
     pd.DataFrame(failures, columns=["PatientID", "SeriesInstanceUID", "error"]).to_csv(log, index=False)
     if failures:
         print(f"{len(failures)} series fallaron; detalle en {log}. Vuelve a correr el script para reintentarlas.")
+    report_progress(sample, args.data_dir)
 
 
 if __name__ == "__main__":
