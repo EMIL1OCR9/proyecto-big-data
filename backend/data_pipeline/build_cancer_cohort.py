@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from link_nlst_ct import normalize_id, prepare_image_index, require_columns
+from link_nlst_ct import normalize_id, prepare_image_index, require_columns, select_t0_series
 
 LOGGER = logging.getLogger("lungai.build_cancer_cohort")
 
@@ -42,24 +42,6 @@ CLINICAL_COLUMNS = [
     "can_scr",
     "cancyr",
 ]
-
-
-def select_t0_series(images: pd.DataFrame) -> pd.DataFrame:
-    """Elige una serie axial original (OPA) de T0 por paciente."""
-    fields = images["SeriesDescription"].astype("string").str.split(",")
-    t0 = images[fields.str[0].eq("0") & fields.str[1].eq("OPA")].copy()
-
-    # Mismo filtro orientativo que link_nlst_ct.build_screening_cohort.
-    t0 = t0[
-        t0["instanceCount"].between(60, 600)
-        & t0["series_size_MB"].between(15, 300)
-    ].copy()
-
-    t0 = t0.sort_values(
-        ["PatientID", "instanceCount", "series_size_MB"],
-        ascending=[True, False, False],
-    )
-    return t0.drop_duplicates("PatientID")
 
 
 def prepare_clinical_table(

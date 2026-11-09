@@ -1,8 +1,14 @@
 from pathlib import Path
+import argparse
 import pandas as pd
 
-ENTRADA = Path("outputs/quality_control/cohorte_revisada.csv")
-SALIDA = Path("outputs/quality_control")
+parser = argparse.ArgumentParser(description="Transformacion de variables de la cohorte LungAI.")
+parser.add_argument("--input", type=Path, default=Path("outputs/quality_control/cohorte_revisada.csv"))
+parser.add_argument("--output-dir", type=Path, default=Path("outputs/quality_control"))
+args = parser.parse_args()
+
+ENTRADA = args.input
+SALIDA = args.output_dir
 SALIDA.mkdir(parents=True, exist_ok=True)
 
 df = pd.read_csv(ENTRADA, low_memory=False)

@@ -22,9 +22,10 @@ def main():
 
     print("Dimensiones:", df.shape)
     print("Perfil guardado en:", args.output_dir / "perfil_variables.csv")
-    if "etiqueta_cribado_provisional" in df.columns:
-        print("\nDistribución de la etiqueta provisional:")
-        print(df["etiqueta_cribado_provisional"].value_counts(dropna=False))
+    for etiqueta in ["etiqueta_cancer_12m", "etiqueta_cribado_provisional"]:
+        if etiqueta in df.columns:
+            print(f"\nDistribución de {etiqueta}:")
+            print(df[etiqueta].value_counts(dropna=False))
     print("\nFaltantes por variable:")
     print(df.isna().sum().to_string())
 
