@@ -117,10 +117,32 @@ def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] 
         elif not same_pixels(current[1], unique[-1][1]):
             raise ValueError("dos cortes en la misma posicion con imagen distinta")
 
+    
     steps = np.diff([s[0] for s in unique])
     z_spacing = float(np.median(steps))
-    if np.any(np.abs(steps - z_spacing) > max(0.25 * z_spacing, 0.2)):
-        raise ValueError("espaciado Z irregular")
+
+    tolerancia = max(0.25 * z_spacing, 0.2)
+
+    irregulares = np.flatnonzero(
+        np.abs(steps - z_spacing) > tolerancia
+    )
+
+    if len(irregulares) > 0:
+        ejemplos = [
+            round(float(steps[i]), 3)
+            for i in irregulares[:10]
+        ]
+
+        raise ValueError(
+            f"espaciado Z irregular | "
+            f"mediana={z_spacing:.3f} mm | "
+            f"minimo={steps.min():.3f} mm | "
+            f"maximo={steps.max():.3f} mm | "
+            f"intervalos_irregulares={len(irregulares)} "
+            f"de {len(steps)} | "
+            f"primeros_intervalos={ejemplos}"
+        )
+
     return [s[1] for s in unique], [s[2] for s in unique], z_spacing, len(slices) - len(unique)
 
 
