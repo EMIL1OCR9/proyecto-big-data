@@ -12,7 +12,8 @@ Uso:
 Importante:
 - --limit es obligatorio para no llenar el disco por accidente.
 - Antes de remuestrear se revisa la geometria de la serie y el relleno fuera del campo
-  de vision se cambia por aire. Ambas partes vienen de procesar_lote_t0.py (Iris).
+  de vision se cambia por aire. Ambas partes vienen del preprocesamiento de Iris
+  (procesar_lote_t0.py, en la rama Iris).
   Ademas del PixelPaddingValue, todo lo que esta debajo de -1024 HU se toma como relleno.
 - Las imagenes se guardan en HU (int16) y se remuestrean una sola vez aqui, con
   SimpleITK, al espaciado del detector. La ventana de HU se aplica despues, en MONAI.
@@ -117,10 +118,32 @@ def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] 
         elif not same_pixels(current[1], unique[-1][1]):
             raise ValueError("dos cortes en la misma posicion con imagen distinta")
 
+    
     steps = np.diff([s[0] for s in unique])
     z_spacing = float(np.median(steps))
-    if np.any(np.abs(steps - z_spacing) > max(0.25 * z_spacing, 0.2)):
-        raise ValueError("espaciado Z irregular")
+
+    tolerancia = max(0.25 * z_spacing, 0.2)
+
+    irregulares = np.flatnonzero(
+        np.abs(steps - z_spacing) > tolerancia
+    )
+
+    if len(irregulares) > 0:
+        ejemplos = [
+            round(float(steps[i]), 3)
+            for i in irregulares[:10]
+        ]
+
+        raise ValueError(
+            f"espaciado Z irregular | "
+            f"mediana={z_spacing:.3f} mm | "
+            f"minimo={steps.min():.3f} mm | "
+            f"maximo={steps.max():.3f} mm | "
+            f"intervalos_irregulares={len(irregulares)} "
+            f"de {len(steps)} | "
+            f"primeros_intervalos={ejemplos}"
+        )
+
     return [s[1] for s in unique], [s[2] for s in unique], z_spacing, len(slices) - len(unique)
 
 
