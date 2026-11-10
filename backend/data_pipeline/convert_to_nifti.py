@@ -12,7 +12,8 @@ Uso:
 Importante:
 - --limit es obligatorio para no llenar el disco por accidente.
 - Antes de remuestrear se revisa la geometria de la serie y el relleno fuera del campo
-  de vision se cambia por aire. Ambas partes vienen de procesar_lote_t0.py (Iris).
+  de vision se cambia por aire. Ambas partes vienen del preprocesamiento de Iris
+  (procesar_lote_t0.py, en la rama Iris).
   Ademas del PixelPaddingValue, todo lo que esta debajo de -1024 HU se toma como relleno.
 - Las imagenes se guardan en HU (int16) y se remuestrean una sola vez aqui, con
   SimpleITK, al espaciado del detector. La ventana de HU se aplica despues, en MONAI.
