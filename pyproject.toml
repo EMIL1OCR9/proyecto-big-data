@@ -8,7 +8,9 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "huggingface-hub>=2.4.0",
     "idc-index>=0.13.4",
+    "lungmask==0.2.21",
     "marimo>=0.25.1",
     "matplotlib>=3.11.2",
     "monai[nibabel]>=1.6.1",
@@ -19,6 +21,7 @@ dependencies = [
     "pydicom>=3.0.2",
     "requests>=2.34.2",
     "simpleitk>=2.5.7",
+    "torchvision>=0.29.2",
     "tqdm>=4.70.1",
 ]
 
