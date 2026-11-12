@@ -123,6 +123,26 @@ def detect_series(path: Path, detector, device, lung_model, lobe_model) -> list[
     return sorted(candidates, key=lambda c: -c["puntaje"])
 
 
+def save_report(row, candidates: list[dict], threshold: float, output: Path) -> dict:
+    """Separa los nodulos del resto de candidatos y guarda el JSON de la serie."""
+    is_nodule = [c["puntaje"] >= threshold and c["en_pulmon"] for c in candidates]
+    report = {
+        "patient_id": row.PatientID,
+        "series_uid": row.SeriesInstanceUID,
+        "imagen": row.ruta_imagen,
+        "modelo": {"detector": BUNDLE, "umbral": threshold},
+        "nodulos": [c for c, ok in zip(candidates, is_nodule) if ok],
+        # Se guardan para poder evaluar con otros umbrales sin volver a correr el modelo.
+        "otros_candidatos": [c for c, ok in zip(candidates, is_nodule) if not ok],
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Solo aparece con su nombre final si termino de escribirse.
+    partial = output.with_suffix(".parcial")
+    partial.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    partial.replace(output)
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("outputs/monai_dataset/cohorte_cancer_12m.parquet"))
@@ -161,22 +181,7 @@ def main() -> None:
         start = time.time()
         try:
             candidates = detect_series(args.data_dir / row.ruta_imagen, detector, device, lung_model, lobe_model)
-            is_nodule = [c["puntaje"] >= args.threshold and c["en_pulmon"] for c in candidates]
-            report = {
-                "patient_id": row.PatientID,
-                "series_uid": row.SeriesInstanceUID,
-                "imagen": row.ruta_imagen,
-                "modelo": {"detector": BUNDLE, "umbral": args.threshold},
-                "nodulos": [c for c, ok in zip(candidates, is_nodule) if ok],
-                # Se guardan para poder evaluar con otros umbrales sin volver a correr el modelo.
-                "otros_candidatos": [c for c, ok in zip(candidates, is_nodule) if not ok],
-            }
-            output = outputs[row.Index]
-            output.parent.mkdir(parents=True, exist_ok=True)
-            # Solo aparece con su nombre final si termino de escribirse.
-            partial = output.with_suffix(".parcial")
-            partial.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-            partial.replace(output)
+            report = save_report(row, candidates, args.threshold, outputs[row.Index])
             status = f"{len(report['nodulos'])} nodulos de {len(candidates)} candidatos"
         except Exception as error:  # Una serie mala no debe detener las demas.
             failures.append({"PatientID": row.PatientID, "SeriesInstanceUID": row.SeriesInstanceUID, "error": str(error)})
