@@ -15,8 +15,11 @@ Proyecto escolar de big data sobre tomografias de torax (CT) del [NLST](https://
 | Division train/validation/test, Parquet y datalist MONAI | Listo |
 | Conversion de imagenes a NIfTI | Listo, piloto de 54 series sin fallos |
 | Deteccion de nodulos | Listo, probado en CPU con 2 CT de referencia; falta la corrida con GPU |
+| Procesamiento por lotes sin guardar las CT | Listo, probado en CPU con 2 CT; falta la corrida con GPU |
+| Clasificador de nodulos (benigno o maligno) | Pendiente: faltan las etiquetas y el entrenamiento |
 | Medicion, analisis longitudinal y evaluacion clinica | Pendiente |
-| Web (React, backend y base de datos) y agente | Pendiente |
+| API (FastAPI) y front (React con NiiVue) | Prototipo |
+| Base de datos y agente | Pendiente |
 
 ## Estructura
 
@@ -34,6 +37,9 @@ backend/data_pipeline/
 backend/inference/
     detectar_nodulos.py         Detecta nodulos en los NIfTI y guarda un JSON por serie
     ver_nodulos.py              Genera una imagen PNG por serie con los nodulos marcados
+    procesar_lotes.py           Descarga, convierte, detecta y recorta por lotes, sin guardar las CT
+backend/api/                    API de pacientes y nodulos (ver su README)
+frontend/                       Interfaz web con visor de CT (ver su README)
 nlst/
     descargar_nlst.py           Descarga CT con limite de GB
     ver_dicom.py                Muestra un corte de una CT
@@ -114,6 +120,20 @@ uv run python backend/inference/ver_nodulos.py
 ```
 
 Genera una imagen PNG junto a cada JSON: por cada nodulo, el corte completo con la caja en rojo y un acercamiento de 6 x 6 cm, con su puntaje, lobulo y tamano. Muestra hasta 5 nodulos por serie (`--max`). Las series sin nodulos no generan imagen.
+
+**Procesar la muestra por lotes, sin guardar las CT:**
+
+```bash
+uv run python backend/inference/procesar_lotes.py --limit 8
+```
+
+Por cada lote descarga las series de IDC, las convierte, detecta nodulos, recorta un cubo alrededor de cada candidato y borra las CT. Asi los 260 GB de la muestra pasan por el programa, pero solo se guarda:
+
+- `outputs/nodulos/`: el mismo JSON por serie, con dos campos mas por candidato: `corte_dicom` (el numero de corte que usa el radiologo) y `recorte` (su posicion en el archivo de recortes).
+- `outputs/recortes/<PatientID>/<SeriesInstanceUID>.npz`: un cubo de 64 x 64 x 40 voxeles (unos 45 x 45 x 50 mm, en HU) por cada candidato con puntaje de 0.1 o mas dentro del pulmon. Son la entrada del clasificador; cada uno pesa cerca de 0.2 MB.
+- `outputs/lotes_progreso.csv`: una fila por serie procesada, con sus MB de descarga. Al final de cada corrida se muestra el total de series y GB procesados.
+
+Volver a correrlo sigue donde se quedo; los fallos quedan en `outputs/lotes_fallidas.csv`. Con `--keep-images` las CT no se borran, y las que ya existian en `data/monai/` nunca se borran. Necesita GPU para correr a escala.
 
 **Descargar una muestra de CT y ver un corte:** sigue [nlst/README.md](nlst/README.md).
 

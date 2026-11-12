@@ -69,11 +69,11 @@ def same_pixels(first: str, second: str) -> bool:
     )
 
 
-def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] | None], float, int]:
+def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] | None], float, int, tuple[int, int]]:
     """Revisa la geometria, ordena los cortes y quita los repetidos.
 
-    Regresa los archivos en orden, el rango de relleno en HU de cada uno, el espaciado Z
-    y cuantos cortes repetidos se quitaron.
+    Regresa los archivos en orden, el rango de relleno en HU de cada uno, el espaciado Z,
+    cuantos cortes repetidos se quitaron y el InstanceNumber del primer y del ultimo corte.
     """
     slices = []
     reference = None
@@ -107,7 +107,7 @@ def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] 
             limit = ds.get("PixelPaddingRangeLimit", pad)
             raw = [normalize_padding(v, bits, representation) for v in (pad, limit)]
             padding = tuple(sorted(v * slope + intercept for v in raw))
-        slices.append((position, path, padding))
+        slices.append((position, path, padding, int(ds.InstanceNumber)))
 
     # GDCM no ordena las series con cortes repetidos, asi que se ordena aqui.
     slices.sort(key=lambda s: s[0])
@@ -144,7 +144,8 @@ def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] 
             f"primeros_intervalos={ejemplos}"
         )
 
-    return [s[1] for s in unique], [s[2] for s in unique], z_spacing, len(slices) - len(unique)
+    instances = (unique[0][3], unique[-1][3])
+    return [s[1] for s in unique], [s[2] for s in unique], z_spacing, len(slices) - len(unique), instances
 
 
 def convert_series(job: dict) -> dict:
@@ -153,7 +154,7 @@ def convert_series(job: dict) -> dict:
         files = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(job["source"], job["uid"])
         if len(files) != job["slices"]:
             raise ValueError(f"{len(files)} cortes, se esperaban {job['slices']}")
-        files, padding, z_spacing, duplicates = read_headers(files)
+        files, padding, z_spacing, duplicates, instances = read_headers(files)
 
         reader = sitk.ImageSeriesReader()
         reader.SetFileNames(files)
@@ -190,6 +191,10 @@ def convert_series(job: dict) -> dict:
             "porcentaje_fuera_del_tag": round(100 * float((mask & ~declared).mean()), 3),
             "espaciado_z_original_mm": round(z_spacing, 3),
             "cortes_repetidos_quitados": duplicates,
+            # Con esto se recupera el numero de corte DICOM, que es el que anota el radiologo.
+            "cortes_originales": len(files),
+            "instancia_primer_corte": instances[0],
+            "instancia_ultimo_corte": instances[1],
         }
     except Exception as error:  # Una serie mala no debe detener las demas.
         return {"error": str(error)}
