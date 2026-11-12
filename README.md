@@ -16,7 +16,8 @@ Proyecto escolar de big data sobre tomografias de torax (CT) del [NLST](https://
 | Conversion de imagenes a NIfTI | Listo, piloto de 54 series sin fallos |
 | Deteccion de nodulos | Listo, probado en CPU con 2 CT de referencia; falta la corrida con GPU |
 | Procesamiento por lotes sin guardar las CT | Listo, probado en CPU con 2 CT; falta la corrida con GPU |
-| Clasificador de nodulos (benigno o maligno) | Pendiente: faltan las etiquetas y el entrenamiento |
+| Etiquetas de nodulos (benigno o maligno) | Listo, probado con 2 CT; faltan los datos de la corrida completa |
+| Clasificador de nodulos | Pendiente: falta el entrenamiento |
 | Medicion, analisis longitudinal y evaluacion clinica | Pendiente |
 | API (FastAPI) y front (React con NiiVue) | Prototipo |
 | Base de datos y agente | Pendiente |
@@ -38,6 +39,7 @@ backend/inference/
     detectar_nodulos.py         Detecta nodulos en los NIfTI y guarda un JSON por serie
     ver_nodulos.py              Genera una imagen PNG por serie con los nodulos marcados
     procesar_lotes.py           Descarga, convierte, detecta y recorta por lotes, sin guardar las CT
+    etiquetar_nodulos.py        Etiqueta cada candidato como maligno o benigno con las tablas del NLST
 backend/api/                    API de pacientes y nodulos (ver su README)
 frontend/                       Interfaz web con visor de CT (ver su README)
 nlst/
@@ -134,6 +136,21 @@ Por cada lote descarga las series de IDC, las convierte, detecta nodulos, recort
 - `outputs/lotes_progreso.csv`: una fila por serie procesada, con sus MB de descarga. Al final de cada corrida se muestra el total de series y GB procesados.
 
 Volver a correrlo sigue donde se quedo; los fallos quedan en `outputs/lotes_fallidas.csv`. Con `--keep-images` las CT no se borran, y las que ya existian en `data/monai/` nunca se borran. Necesita GPU para correr a escala.
+
+**Etiquetar los candidatos para el clasificador:**
+
+```bash
+uv run python backend/inference/etiquetar_nodulos.py
+```
+
+Cruza los JSON de `procesar_lotes.py` con las tablas publicas del NLST, sin descargar imagenes:
+
+- Un candidato es el nodulo que reporto el radiologo si esta a +-5 cortes, en el mismo lobulo y su caja mide entre la mitad y el doble del diametro reportado.
+- `maligno`: es un nodulo reportado y el paciente tuvo cancer confirmado en ese lobulo.
+- `benigno`: el paciente nunca tuvo cancer y se le siguio al menos 2 anos. Incluye candidatos que el radiologo no reporto.
+- Sin etiqueta: los demas candidatos de pacientes con cancer, o con poco seguimiento.
+
+Guarda en `outputs/etiquetas/` la tabla `candidatos_etiquetados.parquet` (una fila por candidato, con su `recorte` y su `split`), `nodulos_reportados.parquet` (si el detector encontro cada nodulo del radiologo) y `resumen_etiquetas.csv`. La etiqueta `maligno` es aproximada: se sabe que hubo cancer en ese lobulo, no que salio de ese nodulo exacto.
 
 **Descargar una muestra de CT y ver un corte:** sigue [nlst/README.md](nlst/README.md).
 
