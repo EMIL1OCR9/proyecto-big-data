@@ -149,6 +149,7 @@ uv run python backend/inference/etiquetar_nodulos.py
 Cruza los JSON de `procesar_lotes.py` con las tablas publicas del NLST, sin descargar imagenes:
 
 - Un candidato es el nodulo que reporto el radiologo si esta a +-5 cortes, en el mismo lobulo y su caja mide entre la mitad y el doble del diametro reportado.
+- Si el corte que anoto el radiologo no cabe en la serie, el radiologo leyo otra reconstruccion que no es publica (pasa con algunos tomografos Siemens). En ese caso solo se exigen lobulo y tamano, y el candidato queda con `emparejado_sin_corte`.
 - `maligno`: es un nodulo reportado y el paciente tuvo cancer confirmado en ese lobulo.
 - `benigno`: el paciente nunca tuvo cancer y se le siguio al menos 2 anos. Incluye candidatos que el radiologo no reporto.
 - Sin etiqueta: los demas candidatos de pacientes con cancer, o con poco seguimiento.

@@ -10,7 +10,9 @@ Uso:
 
 Reglas:
 - Un candidato es el nodulo que reporto el radiologo si esta a +-5 cortes, en el mismo
-  lobulo y su caja mide entre la mitad y el doble del diametro reportado.
+  lobulo y su caja mide entre la mitad y el doble del diametro reportado. Si el corte
+  anotado no cabe en la serie (el radiologo leyo otra reconstruccion), solo se exigen
+  lobulo y tamano, y el candidato queda con emparejado_sin_corte.
 - maligno: es un nodulo reportado y el paciente tuvo cancer confirmado en ese lobulo.
 - benigno: el paciente nunca tuvo cancer y se le siguio al menos 2 anos. Incluye los
   candidatos que el radiologo no reporto (nodulos chicos, vasos, cicatrices).
@@ -107,17 +109,29 @@ def patient_status(prsn: pd.DataFrame, patients: set[str]) -> pd.DataFrame:
     }).set_index("PatientID")
 
 
-def match_reported(candidates: pd.DataFrame, reported: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Busca, para cada nodulo reportado, el candidato de mayor puntaje que le corresponde."""
-    candidates = candidates.assign(reportado=False, lobulo_reportado="", diametro_reportado_mm=np.nan)
-    reported = reported.assign(detectado="no", puntaje=np.nan)
+def match_reported(
+    candidates: pd.DataFrame,
+    reported: pd.DataFrame,
+    slices: pd.Series,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Busca, para cada nodulo reportado, el candidato de mayor puntaje que le corresponde.
+
+    `slices` dice cuantos cortes tiene la serie de cada paciente. Si el radiologo anoto un
+    corte que no cabe, leyo otra reconstruccion (en algunos tomografos no es publica): ese
+    nodulo se empareja solo por lobulo y tamano y queda marcado como sin_corte.
+    """
+    candidates = candidates.assign(
+        reportado=False, lobulo_reportado="", diametro_reportado_mm=np.nan, emparejado_sin_corte=False
+    )
+    reported = reported.assign(
+        detectado="no", puntaje=np.nan,
+        sin_corte=reported["corte_dicom"].gt(reported["PatientID"].map(slices)).to_numpy(),
+    )
 
     for index, nodule in reported.iterrows():
-        match = (
-            candidates["PatientID"].eq(nodule["PatientID"])
-            & ~candidates["reportado"]
-            & (candidates["corte_dicom"] - nodule["corte_dicom"]).abs().le(SLICE_TOLERANCE)
-        )
+        match = candidates["PatientID"].eq(nodule["PatientID"]) & ~candidates["reportado"]
+        if not nodule["sin_corte"]:
+            match &= (candidates["corte_dicom"] - nodule["corte_dicom"]).abs().le(SLICE_TOLERANCE)
         if pd.notna(nodule["lobulo"]):
             match &= candidates["lobulo"].eq(nodule["lobulo"])
         if pd.notna(nodule["diametro_mm"]):
@@ -129,6 +143,7 @@ def match_reported(candidates: pd.DataFrame, reported: pd.DataFrame) -> tuple[pd
         candidates.loc[best, "reportado"] = True
         candidates.loc[best, "lobulo_reportado"] = nodule["lobulo"] if pd.notna(nodule["lobulo"]) else ""
         candidates.loc[best, "diametro_reportado_mm"] = nodule["diametro_mm"]
+        candidates.loc[best, "emparejado_sin_corte"] = nodule["sin_corte"]
         reported.loc[index, "detectado"] = "si" if candidates.loc[best, "es_nodulo"] else "bajo umbral"
         reported.loc[index, "puntaje"] = candidates.loc[best, "puntaje"]
     return candidates, reported
@@ -174,11 +189,12 @@ def main() -> None:
     reported = reported_nodules(client.get_clinical_table("nlst_ctab"), patients)
     status = patient_status(client.get_clinical_table("nlst_prsn"), patients)
 
-    candidates, reported = match_reported(candidates, reported)
-    candidates = assign_labels(candidates, status)
+    cohort = pd.read_parquet(args.cohort, columns=["PatientID", "split", "instanceCount"]).drop_duplicates("PatientID")
+    slices = cohort.set_index("PatientID")["instanceCount"]
 
-    splits = pd.read_parquet(args.cohort, columns=["PatientID", "split"]).drop_duplicates("PatientID")
-    candidates = candidates.merge(splits, on="PatientID", how="left", validate="many_to_one")
+    candidates, reported = match_reported(candidates, reported, slices)
+    candidates = assign_labels(candidates, status)
+    candidates = candidates.merge(cohort[["PatientID", "split"]], on="PatientID", how="left", validate="many_to_one")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     candidates.to_parquet(args.output_dir / "candidatos_etiquetados.parquet", index=False)
@@ -196,6 +212,9 @@ def main() -> None:
     print(summary.to_string())
     print("\nNodulos reportados por el radiologo y si el detector los encontro:")
     print(reported["detectado"].value_counts().reindex(["si", "bajo umbral", "no"], fill_value=0).to_string())
+    unmatched = reported["sin_corte"].sum()
+    if unmatched:
+        print(f"{unmatched} se buscaron solo por lobulo y tamano: el radiologo uso otra reconstruccion.")
     print(f"\nArchivos guardados en: {args.output_dir.resolve()}")
 
 
