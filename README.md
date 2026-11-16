@@ -17,7 +17,7 @@ Proyecto escolar de big data sobre tomografias de torax (CT) del [NLST](https://
 | Deteccion de nodulos | Listo, probado en CPU con 2 CT de referencia; falta la corrida con GPU |
 | Procesamiento por lotes sin guardar las CT | Listo, probado en CPU con 2 CT; falta la corrida con GPU |
 | Etiquetas de nodulos (benigno o maligno) | Listo, probado con 2 CT; faltan los datos de la corrida completa |
-| Clasificador de nodulos | Pendiente: falta el entrenamiento |
+| Clasificador de nodulos | Script listo, probado con datos sinteticos; falta entrenarlo con los recortes reales |
 | Medicion, analisis longitudinal y evaluacion clinica | Pendiente |
 | API (FastAPI) y front (React con NiiVue) | Prototipo |
 | Base de datos y agente | Pendiente |
@@ -40,6 +40,8 @@ backend/inference/
     ver_nodulos.py              Genera una imagen PNG por serie con los nodulos marcados
     procesar_lotes.py           Descarga, convierte, detecta y recorta por lotes, sin guardar las CT
     etiquetar_nodulos.py        Etiqueta cada candidato como maligno o benigno con las tablas del NLST
+backend/training/
+    entrenar_clasificador.py    Entrena el clasificador de nodulos (maligno o benigno) con los recortes
 backend/api/                    API de pacientes y nodulos (ver su README)
 frontend/                       Interfaz web con visor de CT (ver su README)
 nlst/
@@ -155,6 +157,19 @@ Cruza los JSON de `procesar_lotes.py` con las tablas publicas del NLST, sin desc
 - Sin etiqueta: los demas candidatos de pacientes con cancer, o con poco seguimiento.
 
 Guarda en `outputs/etiquetas/` la tabla `candidatos_etiquetados.parquet` (una fila por candidato, con su `recorte` y su `split`), `nodulos_reportados.parquet` (si el detector encontro cada nodulo del radiologo) y `resumen_etiquetas.csv`. La etiqueta `maligno` es aproximada: se sabe que hubo cancer en ese lobulo, no que salio de ese nodulo exacto.
+
+**Entrenar el clasificador de nodulos:**
+
+```bash
+uv run python backend/training/entrenar_clasificador.py
+```
+
+Entrena una ResNet 3D de MONAI con los recortes etiquetados de `train`, elige la mejor epoca por el AUC de `validation` y guarda en `outputs/clasificador/` los pesos (`modelo.pt`), `metricas.json` y `predicciones.csv`. Usa todos los malignos y 10 benignos por cada maligno, con lotes balanceados.
+
+- Reporta siempre el AUC del modelo junto al de dos reglas simples: solo el tamano de la caja y solo el puntaje del detector. Si no supera al tamano, el modelo no aporta.
+- `--max-days 365` deja fuera los malignos diagnosticados mas de un ano despues de la CT.
+- `test` solo se evalua con `--eval-test`, una vez, cuando el modelo ya este decidido.
+- Conviene correrlo con GPU (celda 8 del notebook de Colab). La salida es una probabilidad; no es un diagnostico.
 
 **Descargar una muestra de CT y ver un corte:** sigue [nlst/README.md](nlst/README.md).
 
