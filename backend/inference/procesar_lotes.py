@@ -94,6 +94,7 @@ def main() -> None:
     from detectar_nodulos import detect_series, load_detector, save_report
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     client = IDCClient()
     detector, device = load_detector(args.model_dir)
     lung_model = LMInferer(modelname="R231", tqdm_disable=True)

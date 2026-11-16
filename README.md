@@ -48,6 +48,7 @@ nlst/
     README.md                   Detalles de la descarga y de las tablas clinicas
 notebooks/
     01_exploracion.py           Notebook marimo de prueba
+    lungai_colab.ipynb          Corre el procesamiento por lotes y las etiquetas en Colab con GPU
 src/proyecto_big_data/          Paquete base creado por uv
 ```
 
@@ -136,6 +137,8 @@ Por cada lote descarga las series de IDC, las convierte, detecta nodulos, recort
 - `outputs/lotes_progreso.csv`: una fila por serie procesada, con sus MB de descarga. Al final de cada corrida se muestra el total de series y GB procesados.
 
 Volver a correrlo sigue donde se quedo; los fallos quedan en `outputs/lotes_fallidas.csv`. Con `--keep-images` las CT no se borran, y las que ya existian en `data/monai/` nunca se borran. Necesita GPU para correr a escala.
+
+**Correrlo en Colab con GPU:** abre [notebooks/lungai_colab.ipynb](https://colab.research.google.com/github/EMIL1OCR9/proyecto-big-data/blob/master/notebooks/lungai_colab.ipynb), elige el entorno *T4 GPU* y corre las celdas en orden. Instala el entorno del repo, procesa las series por lotes y guarda los resultados en tu Google Drive. Se puede correr en varias sesiones y repartir entre varias cuentas con `SPLIT`.
 
 **Etiquetar los candidatos para el clasificador:**
 
