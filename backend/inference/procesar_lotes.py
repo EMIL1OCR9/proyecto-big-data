@@ -15,6 +15,9 @@ Importante:
 - Con --keep-images las CT convertidas no se borran (por ejemplo, para el visor 3D).
   Las que ya existian antes de la corrida nunca se borran.
 - Los recortes son para entrenar un clasificador; por si solos NO son un diagnostico.
+- Varias personas pueden correrlo a la vez en la misma carpeta si cada una usa un --split
+  distinto: cada conjunto guarda su avance en lotes_progreso_<split>.csv. Dos personas
+  con el mismo --split procesarian las mismas series.
 - outputs/ y data/ estan en .gitignore. No subir resultados a GitHub.
 """
 
@@ -56,6 +59,15 @@ def dicom_slice(z: int, info: dict) -> int:
     return round(info["instancia_primer_corte"] + original * step)
 
 
+def read_progress(output_dir: Path) -> pd.DataFrame:
+    """Junta el avance de todos los conjuntos (y el archivo unico de versiones anteriores)."""
+    parts = [pd.read_csv(p, dtype={"PatientID": "string"}) for p in sorted(output_dir.glob("lotes_progreso*.csv"))]
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        return pd.DataFrame(columns=["SeriesInstanceUID", "nodulos", "recortes"])
+    return pd.concat(parts, ignore_index=True).drop_duplicates("SeriesInstanceUID", keep="last")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("outputs/monai_dataset/cohorte_cancer_12m.parquet"))
@@ -75,9 +87,12 @@ def main() -> None:
     if args.split:
         sample = sample[sample["split"].eq(args.split)]
 
-    progress_path = args.output_dir / "lotes_progreso.csv"
+    # Cada conjunto escribe su propio archivo de avance: asi varias personas pueden correr
+    # conjuntos distintos a la vez en la misma carpeta sin borrarse filas.
+    tag = args.split or "todos"
+    progress_path = args.output_dir / f"lotes_progreso_{tag}.csv"
     progress = pd.read_csv(progress_path, dtype={"PatientID": "string"}) if progress_path.exists() else pd.DataFrame()
-    done = set(progress["SeriesInstanceUID"]) if len(progress) else set()
+    done = set(read_progress(args.output_dir)["SeriesInstanceUID"])
     pending = sample[~sample["SeriesInstanceUID"].isin(done)]
     selected = pending.head(args.limit)
     print(
@@ -147,16 +162,20 @@ def main() -> None:
 
             # El avance se guarda en cada lote, por si la corrida se interrumpe.
             progress = pd.concat([progress, pd.DataFrame(rows)], ignore_index=True)
-            progress.to_csv(progress_path, index=False)
+            # Se escribe aparte y se renombra: quien lo lea a la vez nunca ve un archivo a medias.
+            partial = progress_path.with_suffix(".parcial")
+            progress.to_csv(partial, index=False)
+            partial.replace(progress_path)
             processed += len(batch)
             print(f"[{processed}/{len(selected)}] fallidas: {len(failures)} | {time.time() - start:.0f} s", flush=True)
 
     # Solo guarda los fallos de esta corrida: al reintentar, el archivo se actualiza.
-    log = args.output_dir / "lotes_fallidas.csv"
+    log = args.output_dir / f"lotes_fallidas_{tag}.csv"
     pd.DataFrame(failures, columns=["PatientID", "SeriesInstanceUID", "error"]).to_csv(log, index=False)
     if failures:
         print(f"{len(failures)} series fallaron; detalle en {log}. Vuelve a correr el script para reintentarlas.")
 
+    progress = read_progress(args.output_dir)
     total = cohort[cohort["en_muestra"]]
     finished = total[total["SeriesInstanceUID"].isin(set(progress["SeriesInstanceUID"]))]
     print(

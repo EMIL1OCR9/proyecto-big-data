@@ -136,9 +136,9 @@ Por cada lote descarga las series de IDC, las convierte, detecta nodulos, recort
 
 - `outputs/nodulos/`: el mismo JSON por serie, con dos campos mas por candidato: `corte_dicom` (el numero de corte que usa el radiologo) y `recorte` (su posicion en el archivo de recortes).
 - `outputs/recortes/<PatientID>/<SeriesInstanceUID>.npz`: un cubo de 64 x 64 x 40 voxeles (unos 45 x 45 x 50 mm, en HU) por cada candidato con puntaje de 0.1 o mas dentro del pulmon. Son la entrada del clasificador; cada uno pesa cerca de 0.2 MB.
-- `outputs/lotes_progreso.csv`: una fila por serie procesada, con sus MB de descarga. Al final de cada corrida se muestra el total de series y GB procesados.
+- `outputs/lotes_progreso_<split>.csv`: una fila por serie procesada, con sus MB de descarga (`todos` si no se usa `--split`). Al final de cada corrida se muestra el total de series y GB procesados.
 
-Volver a correrlo sigue donde se quedo; los fallos quedan en `outputs/lotes_fallidas.csv`. Con `--keep-images` las CT no se borran, y las que ya existian en `data/monai/` nunca se borran. Necesita GPU para correr a escala.
+Volver a correrlo sigue donde se quedo; los fallos quedan en `outputs/lotes_fallidas_<split>.csv`. Como cada conjunto guarda su propio avance, varias personas pueden correrlo a la vez en la misma carpeta con `--split` distintos. Con `--keep-images` las CT no se borran, y las que ya existian en `data/monai/` nunca se borran. Necesita GPU para correr a escala.
 
 **Correrlo en Colab con GPU:** abre [notebooks/lungai_colab.ipynb](https://colab.research.google.com/github/EMIL1OCR9/proyecto-big-data/blob/master/notebooks/lungai_colab.ipynb), elige el entorno *T4 GPU* y corre las celdas en orden. Instala el entorno del repo, procesa las series por lotes y guarda los resultados en tu Google Drive. Se puede correr en varias sesiones y repartir entre varias cuentas con `SPLIT`.
 
