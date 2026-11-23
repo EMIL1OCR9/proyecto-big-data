@@ -17,7 +17,8 @@ Importante:
 - Los recortes son para entrenar un clasificador; por si solos NO son un diagnostico.
 - Varias personas pueden correrlo a la vez en la misma carpeta si cada una usa un --split
   distinto: cada conjunto guarda su avance en lotes_progreso_<split>.csv. Dos personas
-  con el mismo --split procesarian las mismas series.
+  con el mismo --split procesarian las mismas series, salvo que cada una use una --parte
+  distinta (por ejemplo 1/2 y 2/2).
 - outputs/ y data/ estan en .gitignore. No subir resultados a GitHub.
 """
 
@@ -75,6 +76,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--model-dir", type=Path, default=Path("data/modelos"))
     parser.add_argument("--split", choices=["train", "validation", "test"], help="Por defecto, todos.")
+    parser.add_argument("--parte", help="Procesar solo una parte del conjunto, por ejemplo 1/3, para correr en paralelo.")
     parser.add_argument("--limit", type=int, required=True, help="Maximo de series a procesar.")
     parser.add_argument("--workers", type=int, default=1, help="Series que se convierten a la vez.")
     parser.add_argument("--threshold", type=float, default=0.5, help="Puntaje minimo para contar como nodulo.")
@@ -90,6 +92,13 @@ def main() -> None:
     # Cada conjunto escribe su propio archivo de avance: asi varias personas pueden correr
     # conjuntos distintos a la vez en la misma carpeta sin borrarse filas.
     tag = args.split or "todos"
+    if args.parte:
+        # Reparte las series de forma alterna: la parte 1 de 3 toma la 1a, 4a, 7a...
+        part, parts = (int(v) for v in args.parte.split("/"))
+        if not 1 <= part <= parts:
+            raise SystemExit("--parte debe ser como 1/3, con la parte entre 1 y el total.")
+        sample = sample.iloc[part - 1::parts]
+        tag += f"_{part}de{parts}"
     progress_path = args.output_dir / f"lotes_progreso_{tag}.csv"
     progress = pd.read_csv(progress_path, dtype={"PatientID": "string"}) if progress_path.exists() else pd.DataFrame()
     done = set(read_progress(args.output_dir)["SeriesInstanceUID"])
