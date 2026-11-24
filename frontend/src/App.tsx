@@ -2,8 +2,9 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import './App.css'
 
 const CTViewer = lazy(() => import('./CTViewer'))
+const Analisis = lazy(() => import('./Analisis'))
 
-type Page = 'inicio' | 'pacientes' | 'visor'
+type Page = 'inicio' | 'pacientes' | 'visor' | 'analizar'
 type Split = '' | 'train' | 'validation' | 'test'
 
 type Patient = {
@@ -128,6 +129,7 @@ function App() {
           <button className={page === 'inicio' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('inicio')}>⌂ <span>Inicio</span></button>
           <button className={page === 'pacientes' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('pacientes')}>▤ <span>Pacientes</span></button>
           <button className={page === 'visor' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('visor')}>◫ <span>Visor CT</span></button>
+          <button className={page === 'analizar' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('analizar')}>⇪ <span>Analizar estudio</span></button>
         </nav>
         <div className="sidebar-note"><span className="status-dot"/> Prototipo académico<br/><small>Sin validación clínica</small></div>
       </aside>
@@ -181,6 +183,10 @@ function App() {
 
         {page === 'visor' && <Suspense fallback={<section className="placeholder"><p>Preparando el visor NiiVue…</p></section>}>
           <CTViewer key={viewerSelection?.seriesUid ?? 'manual'} apiBase={API} initialSelection={viewerSelection} />
+        </Suspense>}
+
+        {page === 'analizar' && <Suspense fallback={<section className="placeholder"><p>Preparando el análisis…</p></section>}>
+          <Analisis apiBase={API} />
         </Suspense>}
       </main>
 

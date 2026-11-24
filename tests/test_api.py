@@ -1,13 +1,16 @@
 """Pruebas con datos ficticios; no usan pacientes ni imagenes reales."""
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.api.analisis import AnalysisService
 from backend.api.data_service import DatasetService, DatasetUnavailable
 from backend.api.main import create_app
 
@@ -134,3 +137,88 @@ def test_missing_cohort_returns_503(tmp_path):
     res = c.get("/pacientes")
     assert res.status_code == 503
     assert "Parquet" in res.json()["detail"]
+
+
+# --- Estudios subidos (sin modelos: el analisis se reemplaza por uno ficticio) ---
+
+def fake_runner(folder, source, step):
+    step("Paso de prueba")
+    (folder / "estudio.nii.gz").write_bytes(b"FAKE_CT")
+    (folder / "marcas.nii.gz").write_bytes(b"FAKE_MARKS")
+    return {"nodulos": [{"numero": 1, "diametro_mm": 8.0, "probabilidad_maligno": 0.3}]}
+
+
+def failing_runner(folder, source, step):
+    raise ValueError("espaciado Z irregular")
+
+
+def studies_client(tmp_path, runner):
+    service = AnalysisService(tmp_path, runner=runner)
+    return TestClient(create_app(root=tmp_path, analysis=service)), service
+
+
+def upload(client, name="estudio.zip", content=b"PK"):
+    return client.post("/estudios", files={"archivo": (name, io.BytesIO(content))})
+
+
+def test_upload_is_analyzed_and_served(tmp_path):
+    client, service = studies_client(tmp_path, fake_runner)
+    res = upload(client)
+    assert res.status_code == 202
+    study = res.json()["id"]
+    service.pool.submit(lambda: None).result()  # espera a que termine la cola
+
+    data = client.get(f"/estudios/{study}").json()
+    assert data["estado"] == "listo" and data["archivo"] == "estudio.zip"
+    assert data["resultado"]["nodulos"][0]["diametro_mm"] == 8.0
+    assert "no un diagnóstico" in data["resultado"]["advertencia"]
+    assert client.get(f"/estudios/{study}/imagen").content == b"FAKE_CT"
+    assert client.get(f"/estudios/{study}/marcas").content == b"FAKE_MARKS"
+    assert not list((tmp_path / "data/estudios" / study).glob("original*"))  # solo queda la CT convertida
+    assert [s["id"] for s in client.get("/estudios").json()["estudios"]] == [study]
+
+
+def test_failed_analysis_reports_error(tmp_path):
+    client, service = studies_client(tmp_path, failing_runner)
+    study = upload(client, "serie.nii.gz").json()["id"]
+    service.pool.submit(lambda: None).result()
+    data = client.get(f"/estudios/{study}").json()
+    assert data["estado"] == "error" and "irregular" in data["error"]
+    assert data["resultado"] is None
+    assert client.get(f"/estudios/{study}/imagen").status_code == 404
+
+
+def test_upload_rejects_other_files(tmp_path):
+    client, _ = studies_client(tmp_path, fake_runner)
+    res = upload(client, "notas.txt")
+    assert res.status_code == 400 and ".zip" in res.json()["detail"]
+    assert not (tmp_path / "data/estudios").exists() or not any((tmp_path / "data/estudios").iterdir())
+
+
+def test_unknown_studies_are_404(tmp_path):
+    client, _ = studies_client(tmp_path, fake_runner)
+    assert client.get("/estudios/..%2F..%2Fsecret").status_code == 404
+    assert client.get(f"/estudios/{'a' * 32}").status_code == 404
+    assert client.get(f"/estudios/{'a' * 32}/imagen").status_code == 404
+    assert client.get(f"/estudios/{'a' * 32}/otro").status_code == 422
+
+
+def test_zip_paths_never_reach_disk(tmp_path):
+    archive = tmp_path / "subido.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("../../fuera.dcm", b"a")
+        zf.writestr("carpeta/sub/corte.dcm", b"b")
+    target = tmp_path / "extraido"
+    target.mkdir()
+    AnalysisService._unzip(archive, target)
+    assert sorted(p.name for p in target.iterdir()) == ["00000.dcm", "00001.dcm"]
+    assert not (tmp_path / "fuera.dcm").exists()
+
+
+def test_interrupted_studies_become_errors(tmp_path):
+    folder = tmp_path / "data/estudios" / ("b" * 32)
+    folder.mkdir(parents=True)
+    (folder / "estado.json").write_text(json.dumps({"id": "b" * 32, "archivo": "x.zip", "estado": "procesando",
+                                                    "paso": "Buscando", "error": None, "creado": 1, "actualizado": 1}))
+    service = AnalysisService(tmp_path, runner=fake_runner)
+    assert service.state("b" * 32)["estado"] == "error"

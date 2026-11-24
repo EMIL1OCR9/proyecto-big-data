@@ -1,0 +1,14 @@
+.an-progress{margin:18px 0;display:flex;align-items:center;gap:14px;background:#fff;border:1px solid #dfe9f0;border-radius:14px;padding:17px 21px;color:#20455c}
+.an-progress div{display:grid;gap:5px}
+.an-progress small{color:#71889b;font-size:12px}
+.an-spinner{width:22px;height:22px;border-radius:50%;border:3px solid #d6ecee;border-top-color:#167d83;animation:an-spin 1s linear infinite;flex:none}
+@keyframes an-spin{to{transform:rotate(360deg)}}
+.an-table{margin-top:20px}
+.an-table tr.an-selected td{background:#effbf8}
+.an-probability{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.an-bar{display:inline-block;width:70px;height:7px;border-radius:4px;background:#e6eef3;overflow:hidden}
+.an-bar span{display:block;height:100%;background:#167d83}
+.an-empty{margin:0;padding:18px 21px;color:#617e90;font-size:13px}
+.an-notes{margin-top:16px;display:grid;gap:8px;font-size:12px;line-height:1.65;color:#4f6d80}
+.an-notes p{margin:0}
+.an-notes b{color:#20455c}

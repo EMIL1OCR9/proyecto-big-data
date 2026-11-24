@@ -77,6 +77,17 @@ def load_crops(samples: pd.DataFrame, crops_dir: Path) -> np.ndarray:
     return crops
 
 
+def build_model() -> torch.nn.Module:
+    # Con pocos datos BatchNorm se comporta distinto al evaluar; InstanceNorm no depende del lote.
+    return resnet10(spatial_dims=3, n_input_channels=1, num_classes=1, norm=("instance", {"affine": True}))
+
+
+def to_input(crop: np.ndarray) -> torch.Tensor:
+    """Pasa un recorte en HU a la escala 0-1 que ve la red, con su canal: (1, z, y, x)."""
+    crop = torch.from_numpy(crop.astype(np.float32))
+    return ((crop - HU_MIN) / (HU_MAX - HU_MIN)).clamp(0, 1).unsqueeze(0)
+
+
 class CropDataset(Dataset):
     def __init__(self, crops: np.ndarray, labels: np.ndarray, augment: bool):
         self.crops, self.labels, self.augment = crops, labels, augment
@@ -85,8 +96,7 @@ class CropDataset(Dataset):
         return len(self.crops)
 
     def __getitem__(self, index: int):
-        crop = torch.from_numpy(self.crops[index].astype(np.float32))
-        crop = ((crop - HU_MIN) / (HU_MAX - HU_MIN)).clamp(0, 1).unsqueeze(0)  # canal, z, y, x
+        crop = to_input(self.crops[index])
         if self.augment:
             crop = torch.as_tensor(AUGMENT(crop))
         return crop, torch.tensor(self.labels[index], dtype=torch.float32)
@@ -142,8 +152,7 @@ def main() -> None:
     train, validation = index["train"], index["validation"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Con pocos datos BatchNorm se comporta distinto al evaluar; InstanceNorm no depende del lote.
-    model = resnet10(spatial_dims=3, n_input_channels=1, num_classes=1, norm=("instance", {"affine": True})).to(device)
+    model = build_model().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
     loss_function = torch.nn.BCEWithLogitsLoss()
 
