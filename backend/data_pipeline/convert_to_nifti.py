@@ -148,6 +148,13 @@ def read_headers(files: list[str]) -> tuple[list[str], list[tuple[float, float] 
     return [s[1] for s in unique], [s[2] for s in unique], z_spacing, len(slices) - len(unique), instances
 
 
+def resample_to_detector(image: sitk.Image) -> sitk.Image:
+    """Lleva la CT al espaciado del detector; lo que queda fuera del campo es aire."""
+    size = [round(n * s / t) for n, s, t in zip(image.GetSize(), image.GetSpacing(), SPACING)]
+    return sitk.Resample(image, size, sitk.Transform(), sitk.sitkLinear,
+                         image.GetOrigin(), SPACING, image.GetDirection(), AIR_HU)
+
+
 def convert_series(job: dict) -> dict:
     """Convierte una serie ya descargada. Regresa el error o su resumen de calidad."""
     try:
@@ -172,9 +179,7 @@ def convert_series(job: dict) -> dict:
 
         clean = sitk.GetImageFromArray(hu.astype(np.int16))
         clean.CopyInformation(image)
-        size = [round(n * s / t) for n, s, t in zip(clean.GetSize(), clean.GetSpacing(), SPACING)]
-        clean = sitk.Resample(clean, size, sitk.Transform(), sitk.sitkLinear,
-                              clean.GetOrigin(), SPACING, clean.GetDirection(), AIR_HU)
+        clean = resample_to_detector(clean)
 
         destination = Path(job["destination"])
         destination.parent.mkdir(parents=True, exist_ok=True)

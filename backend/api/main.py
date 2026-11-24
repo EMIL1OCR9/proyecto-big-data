@@ -1,25 +1,28 @@
-"""FastAPI de consulta local para LungAI; no ejecuta inferencia ni realiza diagnosticos."""
+"""FastAPI local para LungAI: consulta la cohorte y analiza estudios subidos. No diagnostica."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
+from backend.api.analisis import AnalysisService, InvalidUpload, StudyNotFound
 from backend.api.data_service import DatasetService, DatasetUnavailable, InvalidResult, SeriesRecord
 
 
-def create_app(root: Path | None = None, service: DatasetService | None = None) -> FastAPI:
+def create_app(root: Path | None = None, service: DatasetService | None = None,
+               analysis: AnalysisService | None = None) -> FastAPI:
     project_root = root or Path(__file__).resolve().parents[2]
     app = FastAPI(
         title="LungAI API (investigacion)",
-        description="Consulta local de hallazgos de un detector de nodulos; no ofrece diagnosticos.",
-        version="0.1.0",
+        description="Hallazgos de un detector de nodulos y de un clasificador experimental; no ofrece diagnosticos.",
+        version="0.2.0",
     )
     app.state.service = service
+    app.state.analysis = analysis
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -27,7 +30,7 @@ def create_app(root: Path | None = None, service: DatasetService | None = None) 
             "http://localhost:3000", "http://127.0.0.1:3000",
         ],
         allow_credentials=False,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["Content-Type"],
     )
 
@@ -109,6 +112,41 @@ def create_app(root: Path | None = None, service: DatasetService | None = None) 
         if not path.is_file():
             raise HTTPException(status_code=404, detail="Vista PNG no disponible para esta serie")
         return FileResponse(path, media_type="image/png")
+
+    # --- Estudios subidos: se analizan en esta computadora ---
+
+    @app.exception_handler(StudyNotFound)
+    async def study_missing(request: Request, exc: StudyNotFound):
+        return JSONResponse(status_code=404, content={"detail": "Estudio no encontrado"})
+
+    @app.exception_handler(InvalidUpload)
+    async def bad_upload(request: Request, exc: InvalidUpload):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    def get_analysis(request: Request) -> AnalysisService:
+        if request.app.state.analysis is None:
+            request.app.state.analysis = AnalysisService(project_root)
+        return request.app.state.analysis
+
+    @app.post("/estudios", status_code=202, tags=["Estudios"])
+    def upload_study(archivo: UploadFile, svc: AnalysisService = Depends(get_analysis)):
+        """Recibe un .zip con los DICOM de una serie, o un .nii / .nii.gz, y lo pone en cola."""
+        return svc.submit(archivo.filename, archivo.file)
+
+    @app.get("/estudios", tags=["Estudios"])
+    def list_studies(svc: AnalysisService = Depends(get_analysis)):
+        return {"estudios": svc.studies()}
+
+    @app.get("/estudios/{study_id}", tags=["Estudios"])
+    def study_detail(study_id: str, svc: AnalysisService = Depends(get_analysis)):
+        return {**svc.state(study_id), "resultado": svc.result(study_id)}
+
+    @app.get("/estudios/{study_id}/{archivo}", tags=["Estudios"])
+    def study_file(study_id: str, archivo: Literal["imagen", "marcas"], svc: AnalysisService = Depends(get_analysis)):
+        path = svc.file(study_id, "estudio.nii.gz" if archivo == "imagen" else "marcas.nii.gz")
+        if path is None:
+            raise HTTPException(status_code=404, detail="Todavia no esta lista")
+        return FileResponse(path, media_type="application/gzip")
 
     return app
 
