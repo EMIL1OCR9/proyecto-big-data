@@ -46,6 +46,32 @@ class InvalidUpload(Exception):
     """El archivo subido no se puede analizar."""
 
 
+def write_marks(image, nodules: list[dict], output: Path) -> None:
+    """Guarda una mascara con un anillo alrededor de cada nodulo, con la geometria de la CT.
+
+    Es un cascaron, no una esfera llena: al acercarse se sigue viendo el nodulo por dentro.
+    """
+    import numpy as np
+    import SimpleITK as sitk
+
+    shape = image.GetSize()[::-1]  # z, y, x, como el arreglo
+    spacing = image.GetSpacing()[::-1]
+    marks = np.zeros(shape, dtype=np.uint8)
+    for nodule in nodules:
+        center = nodule["centro_voxel"][::-1]
+        # Un poco mas grande que la caja del detector, para no tapar el borde del nodulo.
+        outer = [max(size / 2 * 1.4, 3.0) / sp for size, sp in zip(nodule["tamano_mm"][::-1], spacing)]
+        inner = [max(r - 1.5 / sp, 0.5) for r, sp in zip(outer, spacing)]  # anillo de 1.5 mm
+        box = tuple(slice(max(c - int(r) - 1, 0), min(c + int(r) + 2, n)) for c, r, n in zip(center, outer, shape))
+        grid = np.ogrid[box]
+        within = sum(((axis - c) / r) ** 2 for axis, c, r in zip(grid, center, outer)) <= 1
+        hollow = sum(((axis - c) / r) ** 2 for axis, c, r in zip(grid, center, inner)) < 1
+        marks[box][within & ~hollow] = 1
+    mask = sitk.GetImageFromArray(marks)
+    mask.CopyInformation(image)
+    sitk.WriteImage(mask, str(output), useCompression=True)
+
+
 def write_json(path: Path, value: dict) -> None:
     """Escribe aparte y renombra: quien lo lea a la vez nunca ve un archivo a medias."""
     partial = path.with_suffix(".parcial")
@@ -226,7 +252,6 @@ class AnalysisService:
         return self.models
 
     def run_pipeline(self, folder: Path, source: Path, step: Step) -> dict:
-        import numpy as np
         import SimpleITK as sitk
         import torch
 
@@ -254,24 +279,12 @@ class AnalysisService:
                 logits = models["classifier"](batch.to(models["device"])).squeeze(1).float().cpu()
             probabilities = torch.sigmoid(logits).tolist()
 
-        marks = np.zeros(volume.shape, dtype=np.uint8)
-        spacing = image.GetSpacing()[::-1]  # z, y, x, como el arreglo
         for number, (nodule, probability) in enumerate(zip(nodules, probabilities), start=1):
-            center = nodule["centro_voxel"][::-1]
-            # Elipsoide del tamano de la caja, un poco mas grande para no tapar el borde del nodulo.
-            radii = [max(size / 2 * 1.3, 2.0) / sp for size, sp in zip(nodule["tamano_mm"][::-1], spacing)]
-            box = tuple(slice(max(c - int(r) - 1, 0), min(c + int(r) + 2, n))
-                        for c, r, n in zip(center, radii, volume.shape))
-            grid = np.ogrid[box]
-            inside = sum(((axis - c) / r) ** 2 for axis, c, r in zip(grid, center, radii)) <= 1
-            marks[box][inside] = 1
             # NiiVue usa coordenadas RAS; SimpleITK, LPS: x e y cambian de signo.
             lx, ly, lz = nodule["centro_mm"]
             nodule.update(numero=number, diametro_mm=max(nodule["tamano_mm"]), centro_ras_mm=[-lx, -ly, lz],
                           probabilidad_maligno=None if probability is None else round(probability, 3))
-        mask = sitk.GetImageFromArray(marks)
-        mask.CopyInformation(image)
-        sitk.WriteImage(mask, str(folder / "marcas.nii.gz"), useCompression=True)
+        write_marks(image, nodules, folder / "marcas.nii.gz")
 
         return {
             "fuente": info,

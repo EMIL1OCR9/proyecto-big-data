@@ -222,3 +222,20 @@ def test_interrupted_studies_become_errors(tmp_path):
                                                     "paso": "Buscando", "error": None, "creado": 1, "actualizado": 1}))
     service = AnalysisService(tmp_path, runner=fake_runner)
     assert service.state("b" * 32)["estado"] == "error"
+
+
+def test_marks_are_rings_around_each_nodule(tmp_path):
+    import SimpleITK as sitk
+
+    from backend.api.analisis import write_marks
+
+    image = sitk.Image(64, 64, 40, sitk.sitkInt16)
+    image.SetSpacing((1.0, 1.0, 1.25))
+    nodule = {"centro_voxel": [32, 30, 20], "tamano_mm": [8.0, 8.0, 8.0]}
+    write_marks(image, [nodule], tmp_path / "marcas.nii.gz")
+    marks = sitk.ReadImage(str(tmp_path / "marcas.nii.gz"))
+    array = sitk.GetArrayFromImage(marks)
+    assert marks.GetSize() == image.GetSize()
+    assert array[20, 30, 32] == 0  # el nodulo queda visible por dentro
+    assert array[20, 30, 32 + 5] == 1  # el anillo lo rodea (radio 8 / 2 * 1.4 = 5.6 mm)
+    assert array[20, 30, 32 + 8] == 0  # y no se extiende de mas
