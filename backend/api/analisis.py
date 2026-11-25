@@ -46,6 +46,41 @@ class InvalidUpload(Exception):
     """El archivo subido no se puede analizar."""
 
 
+def write_marks(image, nodules: list[dict], output: Path) -> None:
+    """Guarda una mascara con un anillo alrededor de cada nodulo, con la geometria de la CT.
+
+    Es un cascaron, no una esfera llena: al acercarse se sigue viendo el nodulo por dentro.
+    """
+    import numpy as np
+    import SimpleITK as sitk
+
+    shape = image.GetSize()[::-1]  # z, y, x, como el arreglo
+    spacing = image.GetSpacing()[::-1]
+    marks = np.zeros(shape, dtype=np.uint8)
+    for nodule in nodules:
+        center = nodule["centro_voxel"][::-1]
+        # Un poco mas grande que la caja del detector, para no tapar el borde del nodulo.
+        outer = [max(size / 2 * 1.4, 3.0) / sp for size, sp in zip(nodule["tamano_mm"][::-1], spacing)]
+        inner = [max(r - 1.5 / sp, 0.5) for r, sp in zip(outer, spacing)]  # anillo de 1.5 mm
+        box = tuple(slice(max(c - int(r) - 1, 0), min(c + int(r) + 2, n)) for c, r, n in zip(center, outer, shape))
+        grid = np.ogrid[box]
+        within = sum(((axis - c) / r) ** 2 for axis, c, r in zip(grid, center, outer)) <= 1
+        hollow = sum(((axis - c) / r) ** 2 for axis, c, r in zip(grid, center, inner)) < 1
+        marks[box][within & ~hollow] = 1
+    mask = sitk.GetImageFromArray(marks)
+    mask.CopyInformation(image)
+    sitk.WriteImage(mask, str(output), useCompression=True)
+
+
+def describe(nodules: list[dict], probabilities: list[float | None]) -> None:
+    """Agrega numero, diametro, centro en RAS (el que usa NiiVue) y probabilidad a cada nodulo."""
+    for number, (nodule, probability) in enumerate(zip(nodules, probabilities), start=1):
+        # SimpleITK usa LPS y NiiVue RAS: x e y cambian de signo.
+        lx, ly, lz = nodule["centro_mm"]
+        nodule.update(numero=number, diametro_mm=max(nodule["tamano_mm"]), centro_ras_mm=[-lx, -ly, lz],
+                      probabilidad_maligno=None if probability is None else round(probability, 3))
+
+
 def write_json(path: Path, value: dict) -> None:
     """Escribe aparte y renombra: quien lo lea a la vez nunca ve un archivo a medias."""
     partial = path.with_suffix(".parcial")
@@ -62,6 +97,8 @@ class AnalysisService:
         # Los modelos ocupan varios GB: los estudios se analizan uno por uno, en orden.
         self.pool = ThreadPoolExecutor(1)
         self.models: dict[str, Any] | None = None
+        self.classifier: dict[str, Any] | None = None
+        self.jobs: dict[str, dict] = {}  # series de la cohorte que se estan preparando
         # Lo que quedo a medias cuando se apago el servidor ya no va a terminar.
         for state in self.studies():
             if state["estado"] in ("en_cola", "procesando"):
@@ -199,46 +236,69 @@ class AnalysisService:
         return {"tipo": "NIfTI", "cortes": image.GetSize()[2],
                 "espaciado_z_original_mm": round(image.GetSpacing()[2], 3)}
 
-    def load_models(self) -> dict[str, Any]:
-        """Carga los modelos una sola vez; el primer estudio tarda mas."""
-        if self.models is None:
+    def load_classifier(self) -> dict[str, Any]:
+        """El clasificador y sus metricas de test; model es None si no se copio modelo.pt."""
+        if self.classifier is None:
             self._import_pipeline()
             import torch
-            from detectar_nodulos import load_detector
             from entrenar_clasificador import build_model
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            info: dict[str, Any] = {"model": None, "device": device, "metrics": None}
+            weights = self.model_dir / "clasificador" / "modelo.pt"
+            if weights.is_file():
+                model = build_model()
+                model.load_state_dict(torch.load(weights, map_location=device, weights_only=True))
+                info["model"] = model.to(device).eval()
+                metrics = weights.with_name("metricas.json")
+                if metrics.is_file():
+                    info["metrics"] = json.loads(metrics.read_text(encoding="utf-8")).get("test")
+            self.classifier = info
+        return self.classifier
+
+    def load_detector(self) -> dict[str, Any]:
+        """Detector y lungmask, una sola vez; el primer estudio tarda mas."""
+        if self.models is None:
+            self._import_pipeline()
+            from detectar_nodulos import load_detector
             from lungmask import LMInferer
 
             detector, device = load_detector(self.model_dir)
-            models = {
-                "detector": detector, "device": device, "classifier": None, "metrics": None,
+            self.models = {
+                "detector": detector, "device": device,
                 "lung": LMInferer(modelname="R231", tqdm_disable=True),
                 "lobes": LMInferer(modelname="LTRCLobes", tqdm_disable=True),
             }
-            weights = self.model_dir / "clasificador" / "modelo.pt"
-            if weights.is_file():
-                classifier = build_model()
-                classifier.load_state_dict(torch.load(weights, map_location=device, weights_only=True))
-                models["classifier"] = classifier.to(device).eval()
-                metrics = weights.with_name("metricas.json")
-                if metrics.is_file():
-                    models["metrics"] = json.loads(metrics.read_text(encoding="utf-8")).get("test")
-            self.models = models
         return self.models
 
-    def run_pipeline(self, folder: Path, source: Path, step: Step) -> dict:
-        import numpy as np
-        import SimpleITK as sitk
+    def classify(self, volume, nodules: list[dict]) -> list[float | None]:
+        """Probabilidad del clasificador para cada nodulo, con el mismo recorte que en Colab."""
+        info = self.load_classifier()
+        if info["model"] is None or not nodules:
+            return [None] * len(nodules)
         import torch
+        from entrenar_clasificador import to_input
+        from procesar_lotes import crop_candidate
+
+        batch = torch.stack([to_input(crop_candidate(volume, n["centro_voxel"])) for n in nodules])
+        with torch.no_grad():
+            logits = info["model"](batch.to(info["device"])).squeeze(1).float().cpu()
+        return torch.sigmoid(logits).tolist()
+
+    def model_summary(self) -> dict:
+        info = self.load_classifier()
+        return {"umbral": THRESHOLD, "clasificador": info["model"] is not None, "metricas_test": info["metrics"]}
+
+    def run_pipeline(self, folder: Path, source: Path, step: Step) -> dict:
+        import SimpleITK as sitk
 
         step("Preparando la tomografía")
         image_path = folder / "estudio.nii.gz"
         info = self.convert(source, image_path)
 
         step("Cargando los modelos")
-        models = self.load_models()
+        models = self.load_detector()
         from detectar_nodulos import BUNDLE, detect_series
-        from entrenar_clasificador import to_input
-        from procesar_lotes import crop_candidate
 
         step("Buscando nódulos y lóbulos (sin tarjeta gráfica tarda varios minutos)")
         candidates = detect_series(image_path, models["detector"], models["device"], models["lung"], models["lobes"])
@@ -246,37 +306,80 @@ class AnalysisService:
 
         step("Midiendo y clasificando los nódulos")
         image = sitk.ReadImage(str(image_path))
-        volume = sitk.GetArrayFromImage(image)
-        probabilities = [None] * len(nodules)
-        if models["classifier"] is not None and nodules:
-            batch = torch.stack([to_input(crop_candidate(volume, n["centro_voxel"])) for n in nodules])
-            with torch.no_grad():
-                logits = models["classifier"](batch.to(models["device"])).squeeze(1).float().cpu()
-            probabilities = torch.sigmoid(logits).tolist()
-
-        marks = np.zeros(volume.shape, dtype=np.uint8)
-        spacing = image.GetSpacing()[::-1]  # z, y, x, como el arreglo
-        for number, (nodule, probability) in enumerate(zip(nodules, probabilities), start=1):
-            center = nodule["centro_voxel"][::-1]
-            # Elipsoide del tamano de la caja, un poco mas grande para no tapar el borde del nodulo.
-            radii = [max(size / 2 * 1.3, 2.0) / sp for size, sp in zip(nodule["tamano_mm"][::-1], spacing)]
-            box = tuple(slice(max(c - int(r) - 1, 0), min(c + int(r) + 2, n))
-                        for c, r, n in zip(center, radii, volume.shape))
-            grid = np.ogrid[box]
-            inside = sum(((axis - c) / r) ** 2 for axis, c, r in zip(grid, center, radii)) <= 1
-            marks[box][inside] = 1
-            # NiiVue usa coordenadas RAS; SimpleITK, LPS: x e y cambian de signo.
-            lx, ly, lz = nodule["centro_mm"]
-            nodule.update(numero=number, diametro_mm=max(nodule["tamano_mm"]), centro_ras_mm=[-lx, -ly, lz],
-                          probabilidad_maligno=None if probability is None else round(probability, 3))
-        mask = sitk.GetImageFromArray(marks)
-        mask.CopyInformation(image)
-        sitk.WriteImage(mask, str(folder / "marcas.nii.gz"), useCompression=True)
-
+        describe(nodules, self.classify(sitk.GetArrayFromImage(image), nodules))
+        write_marks(image, nodules, folder / "marcas.nii.gz")
         return {
             "fuente": info,
-            "modelo": {"detector": BUNDLE, "umbral": THRESHOLD, "clasificador": models["classifier"] is not None,
-                       "metricas_test": models["metrics"]},
+            "modelo": {"detector": BUNDLE, **self.model_summary()},
             "nodulos": nodules,
             "candidatos_descartados": len(candidates) - len(nodules),
         }
+
+    # --- Series de la cohorte, ya analizadas en Colab ---
+
+    def preparation(self, uid: str, detail: Path) -> dict:
+        """Estado de una serie de la cohorte: pendiente, en_cola, procesando, listo o error."""
+        if detail.is_file():
+            return {"estado": "listo", "paso": "Listo", "error": None}
+        return self.jobs.get(uid, {"estado": "pendiente", "paso": "", "error": None})
+
+    def prepare(self, uid: str, report: dict, image: Path, marks: Path, detail: Path, extra: dict) -> dict:
+        """Baja la CT de IDC (si no esta) y marca y clasifica los nodulos del JSON de Colab.
+
+        No vuelve a correr el detector: los nodulos son los mismos que se procesaron en Colab.
+        """
+        state = self.preparation(uid, detail)
+        if state["estado"] in ("listo", "en_cola", "procesando"):
+            return state
+        self.jobs[uid] = {"estado": "en_cola", "paso": "En cola", "error": None}
+        self.pool.submit(self._prepare, uid, report, image, marks, detail, extra)
+        return self.jobs[uid]
+
+    def _prepare(self, uid: str, report: dict, image: Path, marks: Path, detail: Path, extra: dict) -> None:
+        def step(text: str) -> None:
+            self.jobs[uid] = {"estado": "procesando", "paso": text, "error": None}
+
+        try:
+            import SimpleITK as sitk
+
+            if not image.is_file():
+                step("Descargando la tomografía de IDC")
+                self.download(uid, image)
+            step("Marcando y clasificando los nódulos")
+            ct = sitk.ReadImage(str(image))
+            nodules = [dict(n) for n in report["nodulos"]]
+            describe(nodules, self.classify(sitk.GetArrayFromImage(ct), nodules))
+            labels = extra.get("etiquetas", {})
+            for nodule in nodules:
+                label = labels.get(nodule.get("recorte"), {})
+                nodule.update(etiqueta_nlst=label.get("etiqueta"), reportado_radiologo=label.get("reportado"))
+            marks.parent.mkdir(parents=True, exist_ok=True)
+            write_marks(ct, nodules, marks)
+            detail.parent.mkdir(parents=True, exist_ok=True)
+            write_json(detail, {
+                "patient_id": report["patient_id"], "series_uid": uid,
+                **{k: v for k, v in extra.items() if k != "etiquetas"},
+                "modelo": self.model_summary(), "nodulos": nodules,
+                "candidatos_descartados": len(report.get("otros_candidatos", [])),
+                "etiquetas_disponibles": bool(labels), "advertencia": WARNING,
+            })
+            self.jobs.pop(uid, None)
+        except Exception as error:  # El servidor sigue para las demas series.
+            self.jobs[uid] = {"estado": "error", "paso": "", "error": str(error) or type(error).__name__}
+
+    def download(self, uid: str, destination: Path) -> None:
+        """Baja una serie de IDC y la convierte como en Colab; los DICOM se borran al terminar."""
+        self._import_pipeline()
+        import SimpleITK as sitk
+        from convert_to_nifti import convert_series
+        from idc_index import IDCClient
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
+            IDCClient().download_from_selection(downloadDir=temporary, seriesInstanceUID=[uid],
+                                                dirTemplate="%SeriesInstanceUID", show_progress_bar=False, quiet=True)
+            source = str(Path(temporary) / uid)
+            slices = len(sitk.ImageSeriesReader.GetGDCMSeriesFileNames(source, uid))
+            info = convert_series({"source": source, "uid": uid, "slices": slices, "destination": str(destination)})
+        if info["error"]:
+            raise ValueError(f"No se pudo armar la CT: {info['error']}")

@@ -1,25 +1,19 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import NiftiCanvas, { ViewButtons, type View } from './NiftiCanvas'
+import { readJson } from './api'
+import { toFocus } from './medidas'
+import { ModelNotes, NoduleTable, type ModelInfo, type Nodule } from './Nodulos'
 import './Analisis.css'
 
 type Status = 'en_cola' | 'procesando' | 'listo' | 'error'
 type Study = { id: string; archivo: string; estado: Status; paso: string; error: string | null; creado: number }
-type Nodule = {
-  numero: number
-  puntaje: number
-  diametro_mm: number
-  lobulo: string
-  centro_ras_mm: number[]
-  probabilidad_maligno: number | null
-}
-type TestMetrics = { auc_modelo: number; auc_solo_tamano: number; auc_solo_puntaje_detector: number }
 type Result = {
   nodulos: Nodule[]
   candidatos_descartados: number
   segundos: number
   advertencia: string
   fuente: { tipo: string; cortes: number; series_en_el_zip?: number }
-  modelo: { umbral: number; clasificador: boolean; metricas_test: TestMetrics | null }
+  modelo: ModelInfo
 }
 type StudyDetail = Study & { resultado: Result | null }
 
@@ -27,12 +21,6 @@ const STATUS_LABELS: Record<Status, string> = {
   en_cola: 'En cola', procesando: 'Analizando', listo: 'Listo', error: 'Error',
 }
 const running = (status: Status) => status === 'en_cola' || status === 'procesando'
-
-async function readJson<T>(response: Response): Promise<T> {
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.detail ?? `La API respondió HTTP ${response.status}`)
-  return data as T
-}
 
 export default function Analisis({ apiBase }: { apiBase: string }) {
   const [studies, setStudies] = useState<Study[]>([])
@@ -43,6 +31,7 @@ export default function Analisis({ apiBase }: { apiBase: string }) {
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>('multiplanar')
   const [target, setTarget] = useState<Nodule | null>(null)
+  const focusOn = useMemo(() => (target ? toFocus(target) : null), [target])
   const [refresh, setRefresh] = useState(0)
 
   useEffect(() => {
@@ -145,37 +134,13 @@ export default function Analisis({ apiBase }: { apiBase: string }) {
           </div>
           <ViewButtons view={view} onChange={setView} />
         </div>
-        <NiftiCanvas key={selected} view={view} target={target?.centro_ras_mm}
+        <NiftiCanvas key={selected} view={view} focusOn={focusOn}
           imageUrl={`${apiBase}/estudios/${selected}/imagen`} overlayUrl={`${apiBase}/estudios/${selected}/marcas`} />
       </div>
 
-      <div className="table-card an-table">
-        <div className="table-caption">
-          <strong>Nódulos encontrados</strong>
-          <span>{result.nodulos.length} con puntaje del detector ≥ {result.modelo.umbral} · {result.candidatos_descartados} candidatos descartados</span>
-        </div>
-        {result.nodulos.length ? <div className="table-scroll"><table>
-          <thead><tr><th>#</th><th>Lóbulo</th><th>Diámetro mayor</th><th>Puntaje del detector</th><th>Probabilidad del modelo</th><th></th></tr></thead>
-          <tbody>{result.nodulos.map(nodule => <tr key={nodule.numero} className={target?.numero === nodule.numero ? 'an-selected' : ''}>
-            <td>{nodule.numero}</td>
-            <td>{nodule.lobulo || 'Sin lóbulo'}</td>
-            <td>{nodule.diametro_mm.toFixed(1)} mm</td>
-            <td>{nodule.puntaje.toFixed(2)}</td>
-            <td>{nodule.probabilidad_maligno == null ? '—' : <span className="an-probability">
-              <span className="an-bar"><span style={{ width: `${Math.round(nodule.probabilidad_maligno * 100)}%` }} /></span>
-              {Math.round(nodule.probabilidad_maligno * 100)} %
-            </span>}</td>
-            <td><button type="button" className="text-btn" onClick={() => setTarget(nodule)}>Ver en la CT →</button></td>
-          </tr>)}</tbody>
-        </table></div> : <p className="an-empty">El detector no encontró nódulos con puntaje de {result.modelo.umbral} o más.</p>}
-      </div>
-
-      <div className="an-notes">
-        {!result.modelo.clasificador && <p><b>Sin clasificador.</b> No se encontró <code>data/modelos/clasificador/modelo.pt</code>: solo se muestra la detección.</p>}
-        {result.modelo.clasificador && <p><b>Cómo leer la probabilidad.</b> El modelo se entrenó viendo 1 nódulo maligno por cada 10 benignos, así que el número sirve para comparar nódulos entre sí, no es el riesgo real de cáncer.</p>}
-        {result.modelo.metricas_test && <p><b>Qué tan bien funcionó.</b> En la prueba final el modelo obtuvo un AUC de {result.modelo.metricas_test.auc_modelo}; medir solo el tamaño, {result.modelo.metricas_test.auc_solo_tamano}; el puntaje del detector, {result.modelo.metricas_test.auc_solo_puntaje_detector}. {result.modelo.metricas_test.auc_modelo < result.modelo.metricas_test.auc_solo_tamano ? 'El modelo no superó a medir el tamaño.' : 'El modelo quedó a la par o por encima de medir el tamaño.'}</p>}
-        <p><b>Importante.</b> {result.advertencia}</p>
-      </div>
+      <NoduleTable nodules={result.nodulos} discarded={result.candidatos_descartados} model={result.modelo}
+        selected={target} onSelect={setTarget} />
+      <ModelNotes model={result.modelo} warning={result.advertencia} />
     </>}
 
     {!selected && studies.length === 0 && <div className="ct-empty">
