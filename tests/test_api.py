@@ -239,3 +239,91 @@ def test_marks_are_rings_around_each_nodule(tmp_path):
     assert array[20, 30, 32] == 0  # el nodulo queda visible por dentro
     assert array[20, 30, 32 + 5] == 1  # el anillo lo rodea (radio 8 / 2 * 1.4 = 5.6 mm)
     assert array[20, 30, 32 + 8] == 0  # y no se extiende de mas
+
+
+class FakeCohortAnalysis(AnalysisService):
+    """Sin IDC ni modelos: la descarga escribe una CT vacia y el clasificador responde 0.7."""
+
+    def download(self, uid, destination):
+        import SimpleITK as sitk
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        sitk.WriteImage(sitk.Image(16, 16, 12, sitk.sitkInt16), str(destination))
+
+    def classify(self, volume, nodules):
+        return [0.7] * len(nodules)
+
+    def model_summary(self):
+        return {"umbral": 0.5, "clasificador": True, "metricas_test": None}
+
+
+def test_cohort_series_is_downloaded_marked_and_labeled(client):
+    service = client.app.state.service
+    rec = service.by_series[UID_2]
+    report_path = service.report_path(rec)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    nodule = {"puntaje": 0.9, "centro_mm": [1, 2, 3], "centro_voxel": [8, 8, 6], "tamano_mm": [4, 4, 4],
+              "lobulo": "Medio derecho", "en_pulmon": True, "recorte": 0}
+    report_path.write_text(json.dumps({"patient_id": "102", "series_uid": UID_2, "imagen": rec.image_relpath,
+                                       "nodulos": [nodule], "otros_candidatos": []}), encoding="utf-8")
+    labels = service.root / "outputs/etiquetas/candidatos_etiquetados.parquet"
+    labels.parent.mkdir(parents=True)
+    pd.DataFrame([{"SeriesInstanceUID": UID_2, "recorte": 0, "etiqueta": "maligno", "reportado": True}]).to_parquet(labels)
+    analysis = FakeCohortAnalysis(service.root)
+    client.app.state.analysis = analysis
+
+    assert client.get(f"/series/{UID_2}/preparacion").json()["estado"] == "pendiente"
+    assert client.post(f"/series/{UID_2}/preparar").status_code == 202
+    analysis.pool.submit(lambda: None).result()
+
+    data = client.get(f"/series/{UID_2}/preparacion").json()
+    assert data["estado"] == "listo", data
+    found = data["resultado"]["nodulos"][0]
+    assert found["probabilidad_maligno"] == 0.7 and found["etiqueta_nlst"] == "maligno" and found["reportado_radiologo"]
+    assert found["centro_ras_mm"] == [-1, -2, 3] and data["resultado"]["split"] == "validation"
+    assert client.get(f"/series/{UID_2}/marcas").status_code == 200
+    assert client.get(f"/series/{UID_2}/imagen").status_code == 200
+    assert client.post(f"/series/{UID_3}/preparar").status_code == 404  # sin JSON del detector
+
+
+def test_patient_filters_and_order(client):
+    data = client.get("/pacientes?solo_con_resultados=false&con_cancer=true").json()
+    assert [p["patient_id"] for p in data["pacientes"]] == ["102"] and data["pacientes"][0]["cancer_12m"] == 1
+    data = client.get("/pacientes?solo_con_resultados=false&min_tamano_mm=5").json()
+    assert [p["patient_id"] for p in data["pacientes"]] == ["101"]
+    data = client.get("/pacientes?solo_con_resultados=false&orden=tamano").json()
+    assert data["pacientes"][0]["patient_id"] == "101" and data["total"] == 3
+    assert client.get("/pacientes?min_tamano_mm=-1").status_code == 422
+
+
+def test_project_results_and_cases(tmp_path):
+    out = tmp_path / "outputs"
+    (out / "monai_dataset").mkdir(parents=True)
+    pd.DataFrame([
+        {"SeriesInstanceUID": UID_1, "split": "train", "en_muestra": True, "series_size_MB": 1024.0},
+        {"SeriesInstanceUID": UID_2, "split": "test", "en_muestra": True, "series_size_MB": 512.0},
+    ]).to_parquet(out / "monai_dataset/cohorte_cancer_12m.parquet")
+    (out / "nodulos/101").mkdir(parents=True)
+    (out / "nodulos/101" / f"{UID_1}.json").write_text(json.dumps({
+        "series_uid": UID_1, "nodulos": [{"tamano_mm": [5, 5, 5]}, {"tamano_mm": [16, 14, 15]}]}))
+    (out / "lotes").mkdir()
+    pd.DataFrame([{"PatientID": "102", "SeriesInstanceUID": UID_2, "error": "espaciado Z irregular | mediana=1"}]) \
+        .to_csv(out / "lotes/lotes_fallidas_test.csv", index=False)
+    client = TestClient(create_app(root=tmp_path))
+
+    p = client.get("/resultados").json()["procesamiento"]
+    assert (p["series_procesadas"], p["series_total"], p["gb_procesados"], p["nodulos"]) == (1, 2, 1.0, 2)
+    assert {r["categoria"]: r["nodulos"] for r in p["lung_rads"]} == {"2": 1, "3": 0, "4A": 0, "4B": 1}
+    assert p["causas_exclusion"] == [{"causa": "Espaciado irregular entre cortes", "series": 1}]
+    assert client.get("/resultados/casos").status_code == 404
+
+    (out / "clasificador").mkdir()
+    pd.DataFrame([
+        {"PatientID": "1", "SeriesInstanceUID": "a", "recorte": 0, "split": "test", "etiqueta": "maligno", "tamano_mm": 20, "puntaje": 0.9, "probabilidad_maligno": 0.95},
+        {"PatientID": "2", "SeriesInstanceUID": "b", "recorte": 1, "split": "test", "etiqueta": "benigno", "tamano_mm": 15, "puntaje": 0.8, "probabilidad_maligno": 0.7},
+        {"PatientID": "3", "SeriesInstanceUID": "c", "recorte": 0, "split": "test", "etiqueta": "benigno", "tamano_mm": 4, "puntaje": 0.3, "probabilidad_maligno": 0.9},
+        {"PatientID": "4", "SeriesInstanceUID": "d", "recorte": 0, "split": "validation", "etiqueta": "maligno", "tamano_mm": 9, "puntaje": 0.9, "probabilidad_maligno": 0.1},
+    ]).to_csv(out / "clasificador/predicciones.csv", index=False)
+    cases = client.get("/resultados/casos").json()
+    assert (cases["malignos"], cases["benignos"], cases["malignos_detectados"], cases["benignos_marcados"]) == (1, 1, 1, 1)
+    assert cases["falsos_positivos"][0]["patient_id"] == "2"  # el de puntaje 0.3 no se ve en el visor

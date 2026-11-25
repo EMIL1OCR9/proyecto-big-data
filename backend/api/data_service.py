@@ -48,6 +48,8 @@ class DatasetService:
         self.data_root = (self.root / "data" / "monai").resolve()
         self.report_root = (self.root / "outputs" / "nodulos").resolve()
         self.cohort_path = self.root / "outputs" / "monai_dataset" / "cohorte_cancer_12m.parquet"
+        self._labels: pd.DataFrame | None = None
+        self._summaries: dict[tuple[str, str | None], dict[str, Any]] = {}  # para filtrar sin releer los JSON
 
         if cohort is None:
             if not self.cohort_path.is_file():
@@ -140,6 +142,26 @@ class DatasetService:
     def image_preview_path(self, rec: SeriesRecord) -> Path:
         return self.report_path(rec).with_suffix(".png")
 
+    def marks_path(self, rec: SeriesRecord) -> Path:
+        """Mascara con los nodulos del JSON, creada al bajar la CT para el visor."""
+        return self._within(self.data_root, f"marcas/{rec.patient_id}/{rec.series_uid}.nii.gz", ".nii.gz")
+
+    def detail_path(self, rec: SeriesRecord) -> Path:
+        """Nodulos con probabilidad del clasificador y etiqueta del NLST, para el visor."""
+        return self._within(self.data_root, f"analisis/{rec.patient_id}/{rec.series_uid}.json", ".json")
+
+    def labels(self, rec: SeriesRecord) -> dict[int, dict[str, Any]]:
+        """Etiqueta del NLST de cada recorte de la serie (de etiquetar_nodulos.py), si se copio la tabla."""
+        if self._labels is None:
+            path = self.root / "outputs" / "etiquetas" / "candidatos_etiquetados.parquet"
+            if not path.is_file():
+                return {}  # Se vuelve a buscar en la siguiente consulta, por si se copia despues.
+            columns = ["SeriesInstanceUID", "recorte", "etiqueta", "reportado"]
+            self._labels = pd.read_parquet(path, columns=columns).dropna(subset=["recorte"])
+        rows = self._labels[self._labels["SeriesInstanceUID"].eq(rec.series_uid)]
+        return {int(r.recorte): {"etiqueta": r.etiqueta or "sin etiqueta", "reportado": bool(r.reportado)}
+                for r in rows.itertuples()}
+
     @staticmethod
     def _largest(report: dict[str, Any]) -> float | None:
         sizes = []
@@ -168,7 +190,36 @@ class DatasetService:
             "nodulos_detectados": count,
             "nodulo_mayor_mm": round(max(sizes), 2) if sizes else None,
             "estado": "pendiente" if not reports else "disponible" if len(reports) == len(records) else "parcial",
+            # Etiqueta historica del NLST (cancer en los 12 meses siguientes), no una prediccion.
+            "cancer_12m": 1 if any(r.label_12m == 1 for r in records)
+            else 0 if records and all(r.label_12m == 0 for r in records) else None,
         }
+
+    def filtered(self, split: str | None, only_results: bool, cancer: bool | None,
+                 min_size: float | None, order: str) -> list[str]:
+        """Pacientes que cumplen los filtros, en el orden pedido.
+
+        Para filtrar hay que leer los JSON de todos: el resumen de cada paciente se guarda la
+        primera vez (unos segundos con 2,790 series) y las siguientes consultas son inmediatas.
+        """
+        patients = self.patients(split=split, only_results=only_results)
+        if cancer is None and min_size is None and order == "id":
+            return patients
+        rows = []
+        for patient in patients:
+            key = (patient, split)
+            if key not in self._summaries:
+                self._summaries[key] = self.summarize(patient, split=split)
+            rows.append(self._summaries[key])
+        if cancer is not None:
+            rows = [r for r in rows if r["cancer_12m"] == int(cancer)]
+        if min_size is not None:
+            rows = [r for r in rows if (r["nodulo_mayor_mm"] or 0) >= min_size]
+        if order == "nodulos":
+            rows.sort(key=lambda r: -(r["nodulos_detectados"] or 0))
+        elif order == "tamano":
+            rows.sort(key=lambda r: -(r["nodulo_mayor_mm"] or 0))
+        return [r["patient_id"] for r in rows]
 
     def patient_detail(self, patient: str) -> dict[str, Any]:
         items = []

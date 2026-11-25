@@ -29,6 +29,21 @@ La web (`frontend/`) busca la API en el puerto 8081. Visitar `http://127.0.0.1:8
 - `GET /series/{uid}/imagen`: NIfTI `.nii.gz`, si fue convertido.
 - `GET /series/{uid}/vista`: PNG generado por `ver_nodulos.py`; 404 para series sin PNG.
 
+### Resultados del proyecto
+
+- `GET /resultados`: series y GB procesados, nodulos por categoria Lung-RADS, detector contra el radiologo, etiquetas y metricas del clasificador. Se calcula una vez (lee los 2,790 JSON); `?actualizar=true` lo vuelve a leer.
+- `GET /resultados/casos`: aciertos y errores del clasificador en test. Necesita `clasificador/predicciones.csv` de Drive en `outputs/clasificador/`.
+- Opcional: copia `lotes_progreso*.csv` y `lotes_fallidas*.csv` de Drive a `outputs/lotes/` para ver el tiempo por serie y las causas de exclusion.
+- `GET /pacientes` acepta `con_cancer=true|false`, `min_tamano_mm` y `orden=id|nodulos|tamano`. La primera consulta con filtros tarda unos segundos.
+
+### Ver en el visor una serie de la cohorte
+
+Para la cohorte se usan los resultados de Colab: copia `nodulos/` de Drive a `outputs/nodulos/` y, para la etiqueta del NLST, `etiquetas/candidatos_etiquetados.parquet` a `outputs/etiquetas/`. Las CT no estan en Drive: se bajan de IDC al abrir la serie.
+
+- `POST /series/{uid}/preparar`: baja la CT de IDC (si no esta en `data/monai`), la convierte como en Colab y marca y clasifica los nodulos del JSON. No vuelve a correr el detector. Con `?rehacer=true` vuelve a marcar y clasificar, reutilizando la CT.
+- `GET /series/{uid}/preparacion`: `pendiente`, `en_cola`, `procesando`, `listo` o `error`; cuando esta listo trae los nodulos con su probabilidad, si el radiologo los anoto y su etiqueta del NLST.
+- `GET /series/{uid}/marcas`: la mascara de los nodulos para el visor (en `data/monai/marcas/`).
+
 ### Analizar un estudio subido
 
 - `POST /estudios` (campo `archivo`): un `.zip` con los DICOM de una serie, o un `.nii` / `.nii.gz`. Responde 202 y lo pone en cola.

@@ -3,3 +3,10 @@
 .ct-zoom button{background:#163a55;color:#e3f1f7;border:0;border-radius:6px;min-width:30px;height:28px;padding:0 9px;font-weight:700;cursor:pointer}
 .ct-zoom button:disabled{opacity:.4;cursor:default}
 .ct-zoom span{color:#cfe2ec;font-size:12px;min-width:38px;text-align:center}
+.ct-zoom button.on{background:#f0b429;color:#1a2b3a}
+.ct-measuring{cursor:crosshair}
+.ct-focus{position:absolute;top:52px;left:10px;background:#0b2236e6;border:1px solid #2c4d66;border-radius:9px;padding:7px 11px;color:#ffd640;font-size:13px;font-weight:700;pointer-events:none}
+.ct-window{position:absolute;top:10px;left:10px;display:flex;align-items:center;gap:4px;background:#0b2236e6;border:1px solid #2c4d66;border-radius:9px;padding:4px}
+.ct-window button{background:#163a55;color:#e3f1f7;border:0;border-radius:6px;height:28px;padding:0 9px;font-weight:700;cursor:pointer}
+.ct-window button.on{background:#167d83}
+@media(max-width:1100px){.ct-window{top:auto;bottom:44px}.ct-focus{top:auto;bottom:86px}}

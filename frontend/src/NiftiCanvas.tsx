@@ -18,6 +18,14 @@ const VIEW_LABELS: [View, string][] = [
 
 const MAX_ZOOM = 8
 const MARK_OPACITY = 0.8
+
+// Ventanas de contraste estándar en HU (nivel ± ancho / 2).
+type Window = 'pulmon' | 'mediastino' | 'hueso'
+const WINDOWS: Record<Window, { label: string; range: [number, number] }> = {
+  pulmon: { label: 'Pulmón', range: [-1350, 150] }, // nivel -600, ancho 1500
+  mediastino: { label: 'Mediastino', range: [-135, 215] }, // nivel 40, ancho 350: grasa, vasos, calcio
+  hueso: { label: 'Hueso', range: [-500, 1500] }, // nivel 500, ancho 2000
+}
 const NODULE_ZOOM = 3 // al ir a un nódulo: unos 12 cm de campo, el nódulo se ve con su entorno
 
 export function ViewButtons({ view, onChange }: { view: View; onChange: (view: View) => void }) {
@@ -27,35 +35,49 @@ export function ViewButtons({ view, onChange }: { view: View; onChange: (view: V
   </div>
 }
 
+/** Un nódulo al que acercarse: centro en mm (RAS) y, si se conoce, su tamaño (x, y, z) en mm. */
+export type Focus = { center: number[]; size?: number[]; label?: string }
+
 type Props = {
   imageUrl: string
   /** Máscara con los nódulos, misma geometría que la CT; se dibuja en rojo encima. */
   overlayUrl?: string
   view: View
-  /** Punto en mm (RAS) al que se acerca la vista, por ejemplo el centro de un nódulo. */
-  target?: number[] | null
+  /** Nódulo al que se acerca la vista; con `size`, se dibuja su medida en cada corte. */
+  focusOn?: Focus | null
 }
 
+// Clic: mover la cruz · clic derecho o central y arrastrar: mover la imagen · Mayús: contraste.
+const BROWSE = {
+  leftButton: { primary: DRAG_MODE.crosshair, withShift: DRAG_MODE.contrast },
+  rightButton: DRAG_MODE.pan,
+  centerButton: DRAG_MODE.pan,
+}
+// Con la regla, arrastrar con el clic traza una medida en mm.
+const MEASURE = { ...BROWSE, leftButton: { primary: DRAG_MODE.measurement, withShift: DRAG_MODE.contrast } }
+
 /** Un único canvas NiiVue por CT; móntalo con `key` para cambiar de estudio. No ejecuta inferencia. */
-export default function NiftiCanvas({ imageUrl, overlayUrl, view, target }: Props) {
+export default function NiftiCanvas({ imageUrl, overlayUrl, view, focusOn }: Props) {
   const canvas = useRef<HTMLCanvasElement | null>(null)
   const nv = useRef<Niivue | null>(null)
   const viewRef = useRef(view)
-  const targetRef = useRef(target)
+  const focusRef = useRef(focusOn)
   const [phase, setPhase] = useState<'cargando' | 'lista' | 'error'>('cargando')
   const [message, setMessage] = useState('Cargando tomografía NIfTI…')
   const [zoom, setZoom] = useState(1)
   const [showMarks, setShowMarks] = useState(true)
+  const [measuring, setMeasuring] = useState(false)
+  const [windowName, setWindowName] = useState<Window>('pulmon')
 
   useEffect(() => { viewRef.current = view; nv.current?.setSliceType(VIEW_TYPES[view]) }, [view])
 
   useEffect(() => {
-    targetRef.current = target
+    focusRef.current = focusOn
     const viewer = nv.current
-    if (phase !== 'lista' || !viewer || !target) return
-    const frame = requestAnimationFrame(() => setZoom(focus(viewer, target, NODULE_ZOOM)))
+    if (phase !== 'lista' || !viewer || !focusOn) return
+    const frame = requestAnimationFrame(() => setZoom(focus(viewer, focusOn, NODULE_ZOOM)))
     return () => cancelAnimationFrame(frame)
-  }, [phase, target])
+  }, [phase, focusOn])
 
   useEffect(() => {
     const element = canvas.current
@@ -70,12 +92,10 @@ export default function NiftiCanvas({ imageUrl, overlayUrl, view, target }: Prop
       // una fila que no cabe en pantallas anchas.
       multiplanarLayout: MULTIPLANAR_TYPE.GRID,
       multiplanarShowRender: SHOW_RENDER.ALWAYS,
-      // Clic: mover la cruz · clic derecho o central y arrastrar: mover la imagen · Mayús: contraste.
-      mouseEventConfig: {
-        leftButton: { primary: DRAG_MODE.crosshair, withShift: DRAG_MODE.contrast },
-        rightButton: DRAG_MODE.pan,
-        centerButton: DRAG_MODE.pan,
-      },
+      mouseEventConfig: BROWSE,
+      // Medidas en amarillo, para no confundirlas con los anillos rojos de los nódulos.
+      measureLineColor: [1, 0.84, 0.25, 1],
+      measureTextColor: [1, 0.84, 0.25, 1],
     })
     nv.current = viewer
 
@@ -93,13 +113,14 @@ export default function NiftiCanvas({ imageUrl, overlayUrl, view, target }: Prop
         await viewer.attachToCanvas(element!)
         if (cancelled) return
         // La API entrega NIfTI comprimido. El nombre ayuda a reconocer .nii.gz.
-        const volumes = [{ url: imageUrl, name: 'tomografia.nii.gz', colormap: 'gray', cal_min: -1000, cal_max: 400 }]
+        const [low, high] = WINDOWS.pulmon.range
+        const volumes = [{ url: imageUrl, name: 'tomografia.nii.gz', colormap: 'gray', cal_min: low, cal_max: high }]
         if (overlayUrl) volumes.push({ url: overlayUrl, name: 'nodulos.nii.gz', colormap: 'red', cal_min: 0.5, cal_max: 1 })
         await viewer.loadVolumes(volumes)
         if (cancelled) return
         if (overlayUrl) viewer.setOpacity(1, MARK_OPACITY)
         viewer.setSliceType(VIEW_TYPES[viewRef.current])
-        if (targetRef.current) setZoom(focus(viewer, targetRef.current, NODULE_ZOOM))
+        if (focusRef.current) setZoom(focus(viewer, focusRef.current, NODULE_ZOOM))
         setPhase('lista')
         setMessage('Rueda: cambiar de corte · Ctrl + rueda o botones: acercar · clic derecho y arrastrar: mover la imagen.')
       } catch (reason) {
@@ -129,18 +150,51 @@ export default function NiftiCanvas({ imageUrl, overlayUrl, view, target }: Prop
     setShowMarks(!showMarks)
   }
 
+  function toggleRuler() {
+    nv.current?.setMouseEventConfig(measuring ? BROWSE : MEASURE)
+    setMeasuring(!measuring)
+  }
+
+  function clearMeasures() {
+    nv.current?.clearMeasurements()
+    nv.current?.drawScene()
+  }
+
+  function applyWindow(name: Window) {
+    const viewer = nv.current
+    if (!viewer?.volumes.length) return
+    ;[viewer.volumes[0].cal_min, viewer.volumes[0].cal_max] = WINDOWS[name].range
+    viewer.updateGLVolume()
+    setWindowName(name)
+  }
+
+  function capture() {
+    // Guarda como PNG lo que se ve en el visor, con marcas y medidas.
+    void nv.current?.saveScene(`lungai-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`)
+  }
+
   return <div className="ct-canvas-shell">
-    <canvas className="ct-canvas" ref={canvas} aria-label="Visor interactivo de tomografía" onContextMenu={event => event.preventDefault()} />
+    <canvas className={measuring ? 'ct-canvas ct-measuring' : 'ct-canvas'} ref={canvas} aria-label="Visor interactivo de tomografía" onContextMenu={event => event.preventDefault()} />
     {phase !== 'lista' && <div className={`ct-canvas-message ct-${phase}`} role="status">{message}</div>}
     {phase === 'lista' && <>
-      <div className="ct-zoom" aria-label="Zoom">
+      <div className="ct-window" aria-label="Ventana de contraste">
+        {(Object.keys(WINDOWS) as Window[]).map(name => <button key={name} type="button"
+          className={windowName === name ? 'on' : ''} aria-pressed={windowName === name} onClick={() => applyWindow(name)}>{WINDOWS[name].label}</button>)}
+        <button type="button" onClick={capture} title="Guardar como imagen lo que se ve en el visor">Guardar imagen</button>
+      </div>
+      {focusOn?.label && <div className="ct-focus" role="status">{focusOn.label}</div>}
+      <div className="ct-zoom" aria-label="Zoom y medidas">
         <button type="button" onClick={() => zoomWith(0.8)} disabled={zoom <= 1} aria-label="Alejar">−</button>
         <span>{zoom.toFixed(1)}×</span>
         <button type="button" onClick={() => zoomWith(1.25)} disabled={zoom >= MAX_ZOOM} aria-label="Acercar">+</button>
         <button type="button" onClick={() => zoomWith(1)}>Ajustar</button>
+        <button type="button" onClick={toggleRuler} aria-pressed={measuring} className={measuring ? 'on' : ''}>{measuring ? 'Midiendo…' : 'Medir'}</button>
+        <button type="button" onClick={clearMeasures}>Borrar medidas</button>
         {overlayUrl && <button type="button" onClick={toggleMarks} aria-pressed={showMarks}>{showMarks ? 'Ocultar marcas' : 'Ver marcas'}</button>}
       </div>
-      <p className="ct-canvas-caption">{message} Imagen de investigación, no validada para uso clínico.</p>
+      <p className="ct-canvas-caption">{measuring
+        ? 'Regla: arrastra con el clic sobre un corte para medir en mm; la medida se queda en ese corte. Vuelve a pulsar Medir para terminar.'
+        : message} Imagen de investigación, no validada para uso clínico.</p>
     </>}
   </div>
 }
@@ -169,9 +223,31 @@ function fit(viewer: Niivue): number {
   return 1
 }
 
-/** Pone la cruz en el punto y lo deja centrado con ese zoom. */
-function focus(viewer: Niivue, mm: number[], zoom: number): number {
-  viewer.scene.crosshairPos = viewer.mm2frac([mm[0], mm[1], mm[2]])
+/** Pone la cruz en el nódulo, lo deja centrado con ese zoom y dibuja su medida en cada corte. */
+function focus(viewer: Niivue, target: Focus, zoom: number): number {
+  const [x, y, z] = target.center
+  viewer.scene.crosshairPos = viewer.mm2frac([x, y, z])
   viewer.createOnLocationChange()
-  return center(viewer, mm, zoom)
+  viewer.clearMeasurements()
+  if (target.size) {
+    const [sx, sy, sz] = target.size
+    // Una medida por corte, para que los textos no se encimen: la transversal (izquierda-derecha)
+    // en el axial, la craneocaudal (cabeza-pies) en el coronal y la anteroposterior en el sagital.
+    addMeasure(viewer, SLICE_TYPE.AXIAL, [x - sx / 2, y, z], [x + sx / 2, y, z])
+    addMeasure(viewer, SLICE_TYPE.CORONAL, [x, y, z - sz / 2], [x, y, z + sz / 2])
+    addMeasure(viewer, SLICE_TYPE.SAGITTAL, [x, y - sy / 2, z], [x, y + sy / 2, z])
+  }
+  return center(viewer, target.center, zoom)
+}
+
+/** Agrega una medida como las de la regla, en el corte donde está la cruz. */
+function addMeasure(viewer: Niivue, sliceType: SLICE_TYPE, start: number[], end: number[]) {
+  viewer.document.completedMeasurements.push({
+    startMM: Float32Array.from(start),
+    endMM: Float32Array.from(end),
+    distance: Math.hypot(...start.map((value, i) => end[i] - value)),
+    sliceIndex: 0,
+    sliceType,
+    slicePosition: viewer.getCurrentSlicePosition(sliceType),
+  })
 }

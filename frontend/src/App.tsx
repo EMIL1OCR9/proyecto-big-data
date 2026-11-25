@@ -3,8 +3,9 @@ import './App.css'
 
 const CTViewer = lazy(() => import('./CTViewer'))
 const Analisis = lazy(() => import('./Analisis'))
+const Resultados = lazy(() => import('./Resultados'))
 
-type Page = 'inicio' | 'pacientes' | 'visor' | 'analizar'
+type Page = 'inicio' | 'resultados' | 'pacientes' | 'visor' | 'analizar'
 type Split = '' | 'train' | 'validation' | 'test'
 
 type Patient = {
@@ -14,7 +15,11 @@ type Patient = {
   nodulos_detectados: number | null
   nodulo_mayor_mm: number | null
   estado: 'pendiente' | 'disponible' | 'parcial'
+  cancer_12m: number | null
 }
+
+type Cancer = '' | 'true' | 'false'
+type Order = 'id' | 'nodulos' | 'tamano'
 
 type PatientList = {
   total: number
@@ -46,6 +51,9 @@ function statusLabel(status: Patient['estado']) {
 function App() {
   const [page, setPage] = useState<Page>('inicio')
   const [split, setSplit] = useState<Split>('')
+  const [cancer, setCancer] = useState<Cancer>('')
+  const [minSize, setMinSize] = useState('')
+  const [order, setOrder] = useState<Order>('id')
   const [offset, setOffset] = useState(0)
   const [search, setSearch] = useState('')
   const [list, setList] = useState<PatientList | null>(null)
@@ -56,7 +64,7 @@ function App() {
   const [detail, setDetail] = useState<PatientDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
-  const [viewerSelection, setViewerSelection] = useState<{ patientId: string; seriesUid: string } | null>(null)
+  const [viewerSelection, setViewerSelection] = useState<{ patientId: string; seriesUid: string; recorte?: number } | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -69,6 +77,9 @@ function App() {
         solo_con_resultados: 'false',
       })
       if (split) params.set('split', split)
+      if (cancer) params.set('con_cancer', cancer)
+      if (Number(minSize) > 0) params.set('min_tamano_mm', String(Number(minSize)))
+      if (order !== 'id') params.set('orden', order)
       try {
         const response = await fetch(`${API}/pacientes?${params}`, { signal: controller.signal })
         if (!response.ok) throw new Error(`La API respondió HTTP ${response.status}`)
@@ -87,7 +98,7 @@ function App() {
     }
     void loadPatients()
     return () => controller.abort()
-  }, [offset, split, refresh])
+  }, [offset, split, cancer, minSize, order, refresh])
 
   useEffect(() => {
     if (!selectedId) {
@@ -127,6 +138,7 @@ function App() {
         <div className="menu-label">PLATAFORMA</div>
         <nav aria-label="Secciones principales">
           <button className={page === 'inicio' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('inicio')}>⌂ <span>Inicio</span></button>
+          <button className={page === 'resultados' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('resultados')}>▥ <span>Resultados</span></button>
           <button className={page === 'pacientes' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('pacientes')}>▤ <span>Pacientes</span></button>
           <button className={page === 'visor' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('visor')}>◫ <span>Visor CT</span></button>
           <button className={page === 'analizar' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('analizar')}>⇪ <span>Analizar estudio</span></button>
@@ -163,18 +175,33 @@ function App() {
                 <option value="">Todos</option><option value="train">Entrenamiento</option><option value="validation">Validación</option><option value="test">Prueba</option>
               </select>
             </label>
+            <label>Cáncer a 12 meses (NLST)
+              <select value={cancer} onChange={event => {setCancer(event.target.value as Cancer);setOffset(0)}}>
+                <option value="">Todos</option><option value="true">Sí tuvo cáncer</option><option value="false">No tuvo cáncer</option>
+              </select>
+            </label>
+            <label>Nódulo mayor de al menos (mm)
+              <input type="number" min="0" step="1" value={minSize} onChange={event => {setMinSize(event.target.value);setOffset(0)}} placeholder="Por ejemplo, 8" />
+            </label>
+            <label>Ordenar por
+              <select value={order} onChange={event => {setOrder(event.target.value as Order);setOffset(0)}}>
+                <option value="id">ID de paciente</option><option value="nodulos">Más nódulos</option><option value="tamano">Nódulo más grande</option>
+              </select>
+            </label>
             <label>Filtrar ID en esta página
               <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar en los registros visibles" />
             </label>
           </div>
+          {(cancer || minSize || order !== 'id') && <p className="footnote">La primera consulta con filtros tarda unos segundos: lee los resultados de todos los pacientes.</p>}
           {error && <div className="alert">No pudimos leer los pacientes: {error}. <button onClick={() => setRefresh(v => v + 1)}>Reintentar</button></div>}
           <div className="table-card"><div className="table-caption"><strong>Listado de pacientes</strong><span>{list ? `${list.total.toLocaleString('es-MX')} registros` : 'Sin conexión'}</span></div>
-            <div className="table-scroll"><table><thead><tr><th>Paciente</th><th>Series</th><th>Análisis</th><th>Nódulos reportados</th><th>Mayor tamaño</th><th></th></tr></thead>
-              <tbody>{loading ? <tr><td colSpan={6} className="empty-cell">Cargando pacientes…</td></tr> : patients.length ? patients.map(patient => <tr key={patient.patient_id}>
+            <div className="table-scroll"><table><thead><tr><th>Paciente</th><th>Series</th><th>Análisis</th><th>Nódulos detectados</th><th>Mayor tamaño</th><th>Cáncer a 12 meses</th><th></th></tr></thead>
+              <tbody>{loading ? <tr><td colSpan={7} className="empty-cell">Cargando pacientes…</td></tr> : patients.length ? patients.map(patient => <tr key={patient.patient_id}>
                 <td className="mono">{patient.patient_id}</td><td>{patient.series_total}</td><td><span className={`state state-${patient.estado}`}>{statusLabel(patient.estado)}</span></td>
                 <td>{patient.nodulos_detectados ?? '—'}</td><td>{patient.nodulo_mayor_mm == null ? '—' : `${patient.nodulo_mayor_mm} mm`}</td>
+                <td>{patient.cancer_12m == null ? '—' : patient.cancer_12m ? 'Sí' : 'No'}</td>
                 <td><button className="text-btn" onClick={() => setSelectedId(patient.patient_id)}>Ver detalle →</button></td>
-              </tr>) : <tr><td colSpan={6} className="empty-cell">No hay pacientes para esta consulta.</td></tr>}</tbody>
+              </tr>) : <tr><td colSpan={7} className="empty-cell">No hay pacientes para esta consulta.</td></tr>}</tbody>
             </table></div>
             <div className="pagination"><span>{list ? `${offset + (list.pacientes.length ? 1 : 0)}–${offset + list.pacientes.length} de ${list.total}` : '—'}</span><div><button disabled={loading || offset === 0} onClick={() => {setOffset(v => Math.max(0, v - PAGE_SIZE));setSearch('')}}>Anterior</button><button disabled={loading || !list || offset + PAGE_SIZE >= list.total} onClick={() => {setOffset(v => v + PAGE_SIZE);setSearch('')}}>Siguiente</button></div></div>
           </div>
@@ -182,7 +209,11 @@ function App() {
         </>}
 
         {page === 'visor' && <Suspense fallback={<section className="placeholder"><p>Preparando el visor NiiVue…</p></section>}>
-          <CTViewer key={viewerSelection?.seriesUid ?? 'manual'} apiBase={API} initialSelection={viewerSelection} />
+          <CTViewer key={`${viewerSelection?.seriesUid ?? 'manual'}-${viewerSelection?.recorte ?? ''}`} apiBase={API} initialSelection={viewerSelection} />
+        </Suspense>}
+
+        {page === 'resultados' && <Suspense fallback={<section className="placeholder"><p>Preparando los resultados…</p></section>}>
+          <Resultados apiBase={API} onOpenCase={(patientId, seriesUid, recorte) => { setViewerSelection({ patientId, seriesUid, recorte }); setPage('visor') }} />
         </Suspense>}
 
         {page === 'analizar' && <Suspense fallback={<section className="placeholder"><p>Preparando el análisis…</p></section>}>
@@ -194,7 +225,7 @@ function App() {
         <div className="detail-header"><div><span className="eyebrow dark">FICHA DE INVESTIGACIÓN</span><h2>Paciente {selectedId}</h2></div><button className="close-btn" aria-label="Cerrar detalle" onClick={() => setSelectedId(null)}>✕</button></div>
         {detailLoading && <p>Cargando información…</p>}{detailError && <p className="alert">{detailError}</p>}
         {detail && <><p className="muted">Series registradas: {detail.series_total} · Estado: {statusLabel(detail.estado)}</p>
-          {detail.series.map(series => <div className="series-card" key={series.series_uid}><strong>Serie de tomografía</strong><small className="uid">{series.series_uid}</small><div className="series-row"><span>Conjunto</span><b>{series.split}</b></div><div className="series-row"><span>Archivo NIfTI</span><b>{series.imagen_disponible ? 'Disponible' : 'No disponible'}</b></div><div className="series-row"><span>Análisis de nódulos</span><b>{series.analisis_disponible ? 'Disponible' : 'Pendiente'}</b></div><div className="series-row"><span>Nódulos reportados</span><b>{series.nodulos_detectados ?? '—'}</b></div>{series.imagen_disponible && <button type="button" className="outline-btn" style={{ marginTop: 16, width: '100%' }} onClick={() => { setViewerSelection({ patientId: detail.patient_id, seriesUid: series.series_uid }); setSelectedId(null); setPage('visor') }}>Abrir tomografía en visor →</button>}</div>)}
+          {detail.series.map(series => <div className="series-card" key={series.series_uid}><strong>Serie de tomografía</strong><small className="uid">{series.series_uid}</small><div className="series-row"><span>Conjunto</span><b>{series.split}</b></div><div className="series-row"><span>Archivo NIfTI</span><b>{series.imagen_disponible ? 'Disponible' : 'No disponible'}</b></div><div className="series-row"><span>Análisis de nódulos</span><b>{series.analisis_disponible ? 'Disponible' : 'Pendiente'}</b></div><div className="series-row"><span>Nódulos reportados</span><b>{series.nodulos_detectados ?? '—'}</b></div>{(series.imagen_disponible || series.analisis_disponible) && <button type="button" className="outline-btn" style={{ marginTop: 16, width: '100%' }} onClick={() => { setViewerSelection({ patientId: detail.patient_id, seriesUid: series.series_uid }); setSelectedId(null); setPage('visor') }}>Abrir tomografía en visor →</button>}</div>)}
           <p className="footnote">Resultados experimentales sin validación clínica.</p></>}
       </section></div>}
     </div>
