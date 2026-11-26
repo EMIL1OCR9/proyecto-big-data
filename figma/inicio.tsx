@@ -1,0 +1,632 @@
+import { lazy, Suspense, useEffect, useState } from 'react'
+import './inicio.css'
+
+const CTViewer = lazy(() => import('./CTViewer'))
+const Analisis = lazy(() => import('./Analisis'))
+const Resultados = lazy(() => import('./Resultados'))
+
+type Page = 'inicio' | 'resultados' | 'pacientes' | 'visor' | 'analizar'
+type Split = '' | 'train' | 'validation' | 'test'
+
+type Patient = {
+  patient_id: string
+  series_total: number
+  series_analizadas: number
+  nodulos_detectados: number | null
+  nodulo_mayor_mm: number | null
+  estado: 'pendiente' | 'disponible' | 'parcial'
+  cancer_12m: number | null
+}
+
+type Cancer = '' | 'true' | 'false'
+type Order = 'id' | 'nodulos' | 'tamano'
+
+type PatientList = {
+  total: number
+  limit: number
+  offset: number
+  pacientes: Patient[]
+}
+
+type PatientSeries = {
+  series_uid: string
+  split: string
+  imagen_disponible: boolean
+  analisis_disponible: boolean
+  nodulos_detectados: number | null
+}
+
+type PatientDetail = Patient & { series: PatientSeries[] }
+
+const PAGE_SIZE = 12
+const API = 'http://127.0.0.1:8081'
+
+function statusLabel(status: Patient['estado']) {
+  if (status === 'disponible') return 'Analizado'
+  if (status === 'parcial') return 'Parcial'
+  return 'Pendiente'
+}
+
+function LungLogo() {
+  return (
+    <svg width="26" height="22" viewBox="0 0 32 28" fill="none" aria-hidden="true">
+      {/* Tráquea */}
+      <path d="M16 2V11" stroke="#081f5c" strokeWidth="2.4" strokeLinecap="round" />
+      <path d="M16 11L12.5 14.5M16 11L19.5 14.5" stroke="#081f5c" strokeWidth="2" strokeLinecap="round" />
+      {/* Pulmón izquierdo */}
+      <path
+        d="M13.5 9.5C9.5 9.5 5 13.5 4.2 19.5C3.7 23.2 5.8 25.5 9.2 25.5C11.8 25.5 13.8 24.2 13.8 21.5V11C13.8 10.1 13.7 9.5 13.5 9.5Z"
+        fill="#081f5c"
+      />
+      {/* Pulmón derecho */}
+      <path
+        d="M18.5 9.5C22.5 9.5 27 13.5 27.8 19.5C28.3 23.2 26.2 25.5 22.8 25.5C20.2 25.5 18.2 24.2 18.2 21.5V11C18.2 10.1 18.3 9.5 18.5 9.5Z"
+        fill="#081f5c"
+      />
+    </svg>
+  )
+}
+
+function App() {
+  const [page, setPage] = useState<Page>('inicio')
+  const [split, setSplit] = useState<Split>('')
+  const [cancer, setCancer] = useState<Cancer>('')
+  const [minSize, setMinSize] = useState('')
+  const [order, setOrder] = useState<Order>('id')
+  const [offset, setOffset] = useState(0)
+  const [search, setSearch] = useState('')
+  const [list, setList] = useState<PatientList | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refresh, setRefresh] = useState(0)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [detail, setDetail] = useState<PatientDetail | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [viewerSelection, setViewerSelection] = useState<{
+    patientId: string
+    seriesUid: string
+    recorte?: number
+  } | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    async function loadPatients() {
+      setLoading(true)
+      setError(null)
+      const params = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(offset),
+        solo_con_resultados: 'false',
+      })
+      if (split) params.set('split', split)
+      if (cancer) params.set('con_cancer', cancer)
+      if (Number(minSize) > 0) params.set('min_tamano_mm', String(Number(minSize)))
+      if (order !== 'id') params.set('orden', order)
+      try {
+        const response = await fetch(`${API}/pacientes?${params}`, { signal: controller.signal })
+        if (!response.ok) throw new Error(`La API respondió HTTP ${response.status}`)
+        const json = (await response.json()) as PatientList
+        if (!Array.isArray(json.pacientes) || typeof json.total !== 'number') {
+          throw new Error('La API devolvió un formato inesperado')
+        }
+        setList(json)
+      } catch (reason) {
+        if (controller.signal.aborted) return
+        setError(reason instanceof Error ? reason.message : 'No se pudo consultar la API')
+        setList(null)
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    void loadPatients()
+    return () => controller.abort()
+  }, [offset, split, cancer, minSize, order, refresh])
+
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null)
+      return
+    }
+    const controller = new AbortController()
+    setDetail(null)
+    setDetailError(null)
+    setDetailLoading(true)
+    async function loadDetail() {
+      try {
+        const response = await fetch(`${API}/pacientes/${encodeURIComponent(selectedId!)}`, {
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error(`La API respondió HTTP ${response.status}`)
+        setDetail((await response.json()) as PatientDetail)
+      } catch (reason) {
+        if (!controller.signal.aborted) {
+          setDetailError(reason instanceof Error ? reason.message : 'Error desconocido')
+        }
+      } finally {
+        if (!controller.signal.aborted) setDetailLoading(false)
+      }
+    }
+    void loadDetail()
+    return () => controller.abort()
+  }, [selectedId])
+
+  const patients = (list?.pacientes ?? []).filter((patient) =>
+    patient.patient_id.includes(search.trim())
+  )
+  const analyzedOnPage = (list?.pacientes ?? []).filter(
+    (patient) => patient.series_analizadas > 0
+  ).length
+
+  return (
+    <div className="app-shell">
+      {/* Elementos geométricos decorativos idénticos a la esquina superior derecha */}
+      {page === 'inicio' && (
+        <div className="hero-shapes" aria-hidden="true">
+          <div className="shape-ring-outer" />
+          <div className="shape-ring-inner" />
+          <div className="shape-dot" />
+        </div>
+      )}
+
+      {/* Barra de navegación flotante estilo píldora */}
+      <header className="top-nav-wrapper">
+        <nav className="pill-nav" aria-label="Navegación principal">
+          <button
+            type="button"
+            className="brand-pill"
+            onClick={() => setPage('inicio')}
+          >
+            <LungLogo />
+            <span>ungAI</span>
+          </button>
+
+          <div className="pill-links">
+            <button
+              type="button"
+              className={page === 'pacientes' ? 'pill-link active' : 'pill-link'}
+              onClick={() => setPage('pacientes')}
+            >
+              PACIENTES
+            </button>
+            <button
+              type="button"
+              className={page === 'visor' ? 'pill-link active' : 'pill-link'}
+              onClick={() => setPage('visor')}
+            >
+              VISOR CT
+            </button>
+            <button
+              type="button"
+              className={page === 'resultados' ? 'pill-link active' : 'pill-link'}
+              onClick={() => setPage('resultados')}
+            >
+              RESULTADOS
+            </button>
+            <button
+              type="button"
+              className={page === 'analizar' ? 'pill-link active' : 'pill-link'}
+              onClick={() => setPage('analizar')}
+            >
+              ANALIZAR
+            </button>
+          </div>
+        </nav>
+      </header>
+
+      <main className="main-container">
+        {page === 'inicio' && (
+          <>
+            <section className="hero-section">
+              <h1 className="hero-title">
+                Exploración
+                <br />
+                inteligente
+                <span className="hero-subtitle-line">de imágenes pulmonares</span>
+              </h1>
+
+              <p className="hero-description">
+                Una plataforma académica para consultar estudios de tomografía y visualizar
+                posibles nódulos identificados por modelos experimentales.
+              </p>
+
+              <button
+                type="button"
+                className="cta-pill-btn"
+                onClick={() => setPage('pacientes')}
+              >
+                <span>Explorar pacientes</span>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M4 12H20M20 12L14 6M20 12L14 18"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </section>
+
+            <section className="overview-section">
+              <h2 className="overview-heading">
+                <span>Panorama</span> del Proyecto
+              </h2>
+
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <span className="stat-title">Pacientes en muestra</span>
+                  <strong className="stat-value">
+                    {loading ? '—' : list?.total.toLocaleString('es-MX') ?? '—'}
+                  </strong>
+                  <small className="stat-meta">
+                    {split ? `Filtro: ${split}` : 'Consulta desde Parquet'}
+                  </small>
+                </div>
+
+                <div className="stat-card">
+                  <span className="stat-title">Pacientes visibles</span>
+                  <strong className="stat-value">
+                    {loading ? '—' : list?.pacientes.length ?? '—'}
+                  </strong>
+                  <small className="stat-meta">En la página actual</small>
+                </div>
+
+                <div className="stat-card">
+                  <span className="stat-title">Análisis disponibles</span>
+                  <strong className="stat-value">{loading ? '—' : analyzedOnPage}</strong>
+                  <small className="stat-meta">Solo en la página actual</small>
+                </div>
+              </div>
+
+              {error && (
+                <div className="alert">
+                  No se pudo conectar con FastAPI: {error}. Comprueba que esté ejecutándose en el
+                  puerto 8081. <button onClick={() => setRefresh((v) => v + 1)}>Reintentar</button>
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {page === 'pacientes' && (
+          <section className="subpage-content">
+            <div className="page-heading">
+              <div>
+                <span className="eyebrow">EXPLORADOR DE DATOS</span>
+                <h1>Pacientes</h1>
+                <p>Registros de la cohorte de investigación, consultados desde tu API FastAPI.</p>
+              </div>
+              <button className="outline-btn" onClick={() => setRefresh((v) => v + 1)}>
+                ↻ Actualizar
+              </button>
+            </div>
+
+            <div className="filters">
+              <label>
+                División de datos
+                <select
+                  value={split}
+                  onChange={(event) => {
+                    setSplit(event.target.value as Split)
+                    setOffset(0)
+                    setSearch('')
+                  }}
+                >
+                  <option value="">Todos</option>
+                  <option value="train">Entrenamiento</option>
+                  <option value="validation">Validación</option>
+                  <option value="test">Prueba</option>
+                </select>
+              </label>
+
+              <label>
+                Cáncer a 12 meses (NLST)
+                <select
+                  value={cancer}
+                  onChange={(event) => {
+                    setCancer(event.target.value as Cancer)
+                    setOffset(0)
+                  }}
+                >
+                  <option value="">Todos</option>
+                  <option value="true">Sí tuvo cáncer</option>
+                  <option value="false">No tuvo cáncer</option>
+                </select>
+              </label>
+
+              <label>
+                Nódulo mayor de al menos (mm)
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={minSize}
+                  onChange={(event) => {
+                    setMinSize(event.target.value)
+                    setOffset(0)
+                  }}
+                  placeholder="Por ejemplo, 8"
+                />
+              </label>
+
+              <label>
+                Ordenar por
+                <select
+                  value={order}
+                  onChange={(event) => {
+                    setOrder(event.target.value as Order)
+                    setOffset(0)
+                  }}
+                >
+                  <option value="id">ID de paciente</option>
+                  <option value="nodulos">Más nódulos</option>
+                  <option value="tamano">Nódulo más grande</option>
+                </select>
+              </label>
+
+              <label>
+                Filtrar ID en esta página
+                <input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Buscar en los registros visibles"
+                />
+              </label>
+            </div>
+
+            {(cancer || minSize || order !== 'id') && (
+              <p className="footnote">
+                La primera consulta con filtros tarda unos segundos: lee los resultados de todos los
+                pacientes.
+              </p>
+            )}
+
+            {error && (
+              <div className="alert">
+                No pudimos leer los pacientes: {error}.{' '}
+                <button onClick={() => setRefresh((v) => v + 1)}>Reintentar</button>
+              </div>
+            )}
+
+            <div className="table-card">
+              <div className="table-caption">
+                <strong>Listado de pacientes</strong>
+                <span>
+                  {list ? `${list.total.toLocaleString('es-MX')} registros` : 'Sin conexión'}
+                </span>
+              </div>
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Paciente</th>
+                      <th>Series</th>
+                      <th>Análisis</th>
+                      <th>Nódulos detectados</th>
+                      <th>Mayor tamaño</th>
+                      <th>Cáncer a 12 meses</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={7} className="empty-cell">
+                          Cargando pacientes…
+                        </td>
+                      </tr>
+                    ) : patients.length ? (
+                      patients.map((patient) => (
+                        <tr key={patient.patient_id}>
+                          <td className="mono">{patient.patient_id}</td>
+                          <td>{patient.series_total}</td>
+                          <td>
+                            <span className={`state state-${patient.estado}`}>
+                              {statusLabel(patient.estado)}
+                            </span>
+                          </td>
+                          <td>{patient.nodulos_detectados ?? '—'}</td>
+                          <td>
+                            {patient.nodulo_mayor_mm == null ? '—' : `${patient.nodulo_mayor_mm} mm`}
+                          </td>
+                          <td>
+                            {patient.cancer_12m == null ? '—' : patient.cancer_12m ? 'Sí' : 'No'}
+                          </td>
+                          <td>
+                            <button
+                              className="text-btn"
+                              onClick={() => setSelectedId(patient.patient_id)}
+                            >
+                              Ver detalle →
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={7} className="empty-cell">
+                          No hay pacientes para esta consulta.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="pagination">
+                <span>
+                  {list
+                    ? `${offset + (list.pacientes.length ? 1 : 0)}–${
+                        offset + list.pacientes.length
+                      } de ${list.total}`
+                    : '—'}
+                </span>
+                <div>
+                  <button
+                    disabled={loading || offset === 0}
+                    onClick={() => {
+                      setOffset((v) => Math.max(0, v - PAGE_SIZE))
+                      setSearch('')
+                    }}
+                  >
+                    Anterior
+                  </button>
+                  <button
+                    disabled={loading || !list || offset + PAGE_SIZE >= list.total}
+                    onClick={() => {
+                      setOffset((v) => v + PAGE_SIZE)
+                      setSearch('')
+                    }}
+                  >
+                    Siguiente
+                  </button>
+                </div>
+              </div>
+            </div>
+            <p className="footnote">
+              “Pendiente” significa que todavía no existe un JSON del detector, no que se hayan
+              encontrado cero nódulos.
+            </p>
+          </section>
+        )}
+
+        {page === 'visor' && (
+          <section className="subpage-content">
+            <Suspense
+              fallback={
+                <section className="placeholder">
+                  <p>Preparando el visor NiiVue…</p>
+                </section>
+              }
+            >
+              <CTViewer
+                key={`${viewerSelection?.seriesUid ?? 'manual'}-${viewerSelection?.recorte ?? ''}`}
+                apiBase={API}
+                initialSelection={viewerSelection}
+              />
+            </Suspense>
+          </section>
+        )}
+
+        {page === 'resultados' && (
+          <section className="subpage-content">
+            <Suspense
+              fallback={
+                <section className="placeholder">
+                  <p>Preparando los resultados…</p>
+                </section>
+              }
+            >
+              <Resultados
+                apiBase={API}
+                onOpenCase={(patientId, seriesUid, recorte) => {
+                  setViewerSelection({ patientId, seriesUid, recorte })
+                  setPage('visor')
+                }}
+              />
+            </Suspense>
+          </section>
+        )}
+
+        {page === 'analizar' && (
+          <section className="subpage-content">
+            <Suspense
+              fallback={
+                <section className="placeholder">
+                  <p>Preparando el análisis…</p>
+                </section>
+              }
+            >
+              <Analisis apiBase={API} />
+            </Suspense>
+          </section>
+        )}
+      </main>
+
+      {/* Banner inferior fijo al pie de la página tal como en la captura */}
+      <footer className="bottom-disclaimer-bar">
+        <div className="bottom-disclaimer-inner">
+          Esta plataforma es un prototipo académico de investigación. Los hallazgos de un modelo no
+          están validados para tomar decisiones clínicas.
+        </div>
+      </footer>
+
+      {selectedId && (
+        <div className="modal-shade" onClick={() => setSelectedId(null)}>
+          <section
+            className="detail-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Detalle de paciente"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="detail-header">
+              <div>
+                <span className="eyebrow">FICHA DE INVESTIGACIÓN</span>
+                <h2>Paciente {selectedId}</h2>
+              </div>
+              <button
+                className="close-btn"
+                aria-label="Cerrar detalle"
+                onClick={() => setSelectedId(null)}
+              >
+                ✕
+              </button>
+            </div>
+            {detailLoading && <p>Cargando información…</p>}
+            {detailError && <p className="alert">{detailError}</p>}
+            {detail && (
+              <>
+                <p className="muted">
+                  Series registradas: {detail.series_total} · Estado: {statusLabel(detail.estado)}
+                </p>
+                {detail.series.map((series) => (
+                  <div className="series-card" key={series.series_uid}>
+                    <strong>Serie de tomografía</strong>
+                    <small className="uid">{series.series_uid}</small>
+                    <div className="series-row">
+                      <span>Conjunto</span>
+                      <b>{series.split}</b>
+                    </div>
+                    <div className="series-row">
+                      <span>Archivo NIfTI</span>
+                      <b>{series.imagen_disponible ? 'Disponible' : 'No disponible'}</b>
+                    </div>
+                    <div className="series-row">
+                      <span>Análisis de nódulos</span>
+                      <b>{series.analisis_disponible ? 'Disponible' : 'Pendiente'}</b>
+                    </div>
+                    <div className="series-row">
+                      <span>Nódulos reportados</span>
+                      <b>{series.nodulos_detectados ?? '—'}</b>
+                    </div>
+                    {(series.imagen_disponible || series.analisis_disponible) && (
+                      <button
+                        type="button"
+                        className="outline-btn"
+                        style={{ marginTop: 16, width: '100%' }}
+                        onClick={() => {
+                          setViewerSelection({
+                            patientId: detail.patient_id,
+                            seriesUid: series.series_uid,
+                          })
+                          setSelectedId(null)
+                          setPage('visor')
+                        }}
+                      >
+                        Abrir tomografía en visor →
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <p className="footnote">Resultados experimentales sin validación clínica.</p>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default App
